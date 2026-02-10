@@ -1,0 +1,15 @@
+{
+  "ner_model": "dslim/bert-base-NER",
+  "sentence_transformer": "sentence-transformers/all-mpnet-base-v2",
+  "dependency_classifier": "bert-base-uncased",
+  "signal_classifier": "roberta-base",
+  "thresholds": {
+    "semantic_relevance": 0.45,
+    "entity_confidence": 0.7,
+    "signal_confidence": 0.5,
+    "dependency_threshold": 0.3
+  },
+  "cache_dir": "./models/cache",
+  "max_sequence_length": 512,
+  "batch_size": 16
+}

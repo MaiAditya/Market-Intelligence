@@ -1,0 +1,67 @@
+{
+  "events": [
+    {
+      "event_id": "gemini-5-release-2026",
+      "event_type": "model_release",
+      "event_title": "Google Gemini 5 Release by End 2026",
+      "event_description": "Google releasing Gemini 5 by end of 2026",
+      "primary_entities": ["Gemini 5", "Google"],
+      "secondary_entities": ["DeepMind", "Gemini", "Google AI", "Alphabet"],
+      "aliases": ["Gemini-5", "Gemini V", "Gemini Five", "Gemini5"],
+      "deadline": "2026-12-31T23:59:59Z",
+      "dependencies": [
+        "training",
+        "compute",
+        "safety",
+        "regulation",
+        "executive_statement",
+        "public_narrative"
+      ],
+      "polymarket_slug": "will-google-release-gemini-5-in-2026"
+    },
+    {
+      "event_id": "gpt-5-release-2026",
+      "event_type": "model_release",
+      "event_title": "OpenAI GPT-5 Release by End 2026",
+      "event_description": "OpenAI releasing GPT-5 by end of 2026",
+      "primary_entities": ["GPT-5", "OpenAI"],
+      "secondary_entities": ["GPT", "ChatGPT", "Sam Altman", "Microsoft"],
+      "aliases": ["GPT5", "GPT-V", "GPT Five", "GPT 5"],
+      "deadline": "2026-12-31T23:59:59Z",
+      "dependencies": [
+        "training",
+        "compute",
+        "safety",
+        "regulation",
+        "executive_statement",
+        "public_narrative"
+      ],
+      "polymarket_slug": "will-openai-release-gpt-5-in-2026"
+    },
+    {
+      "event_id": "eu-ai-act-enforcement-2027",
+      "event_type": "regulation",
+      "event_title": "EU AI Act Full Enforcement by 2027",
+      "event_description": "European Union AI Act becoming fully enforced by 2027",
+      "primary_entities": ["EU AI Act", "European Union"],
+      "secondary_entities": ["European Commission", "AI regulation", "Brussels", "EU Parliament"],
+      "aliases": ["AI Act", "European AI Act", "EU Artificial Intelligence Act", "AIA"],
+      "deadline": "2027-12-31T23:59:59Z",
+      "dependencies": [
+        "regulation",
+        "executive_statement",
+        "public_narrative",
+        "safety"
+      ],
+      "polymarket_slug": "will-eu-ai-act-be-fully-enforced-by-2027"
+    }
+  ],
+  "dependency_descriptions": {
+    "training": "Information about model training progress, compute usage, datasets, training milestones, and training completion",
+    "compute": "Information about computational resources, GPUs, TPUs, infrastructure, data centers, and hardware availability",
+    "safety": "Information about safety testing, alignment research, red teaming, risks, and responsible AI development",
+    "regulation": "Information about regulatory requirements, compliance, legal frameworks, government oversight, and policy",
+    "executive_statement": "Official statements, announcements, press releases, or communications from company executives or leadership",
+    "public_narrative": "Public perception, media coverage, social media sentiment, and general discourse about the event"
+  }
+}

@@ -1,0 +1,102 @@
+{
+  "query_families": {
+    "official": {
+      "description": "Official sources and factual announcements",
+      "expected_bias": "positive",
+      "templates": [
+        "{primary_entity} announcement",
+        "{primary_entity} official statement",
+        "{primary_entity} press release",
+        "{secondary_entity} {primary_entity} launch date",
+        "{primary_entity} official blog",
+        "{secondary_entity} announces {primary_entity}"
+      ]
+    },
+    "journalist": {
+      "description": "Journalist and insider reports",
+      "expected_bias": "neutral",
+      "templates": [
+        "{primary_entity} leak",
+        "{primary_entity} insider report",
+        "{secondary_entity} {primary_entity} development",
+        "{primary_entity} sources say",
+        "{primary_entity} exclusive report",
+        "{primary_entity} investigation",
+        "{secondary_entity} {primary_entity} timeline"
+      ]
+    },
+    "public_opinion": {
+      "description": "Public discourse on social platforms",
+      "expected_bias": "neutral",
+      "templates": [
+        "{primary_entity} reddit",
+        "{primary_entity} twitter discussion",
+        "{primary_entity} hacker news",
+        "{primary_entity} community reaction",
+        "{primary_entity} public opinion",
+        "{primary_entity} user feedback"
+      ]
+    },
+    "critical": {
+      "description": "Negative or critical framing",
+      "expected_bias": "negative",
+      "templates": [
+        "{primary_entity} delay",
+        "{primary_entity} problem",
+        "{primary_entity} criticism",
+        "{primary_entity} concerns",
+        "{primary_entity} skepticism",
+        "{primary_entity} risks",
+        "{primary_entity} challenges",
+        "{secondary_entity} {primary_entity} issues"
+      ]
+    }
+  },
+  "event_type_specific_templates": {
+    "model_release": {
+      "official": [
+        "{primary_entity} training complete",
+        "{primary_entity} benchmark results",
+        "{secondary_entity} {primary_entity} capabilities"
+      ],
+      "journalist": [
+        "{primary_entity} performance leak",
+        "{primary_entity} early access review"
+      ],
+      "critical": [
+        "{primary_entity} safety concerns",
+        "{primary_entity} alignment issues"
+      ]
+    },
+    "regulation": {
+      "official": [
+        "{primary_entity} implementation timeline",
+        "{primary_entity} compliance requirements",
+        "{secondary_entity} {primary_entity} vote"
+      ],
+      "journalist": [
+        "{primary_entity} industry impact",
+        "{primary_entity} company response"
+      ],
+      "critical": [
+        "{primary_entity} enforcement challenges",
+        "{primary_entity} loopholes",
+        "{primary_entity} opposition"
+      ]
+    },
+    "capability": {
+      "official": [
+        "{primary_entity} demonstration",
+        "{primary_entity} benchmark"
+      ],
+      "journalist": [
+        "{primary_entity} breakthrough",
+        "{primary_entity} achievement"
+      ],
+      "critical": [
+        "{primary_entity} limitations",
+        "{primary_entity} overhyped"
+      ]
+    }
+  }
+}
