@@ -213,3 +213,44 @@ class DependencyClassifier:
             List of dependency score dictionaries
         """
         return [self.classify(doc) for doc in documents]
+    
+    def classify_batch_optimized(
+        self,
+        document_embeddings: np.ndarray
+    ) -> List[Dict[str, float]]:
+        """
+        Optimized batch classification using pre-computed document embeddings.
+        
+        This method is designed to work with embeddings from score_batch_optimized()
+        to avoid redundant encoding.
+        
+        Args:
+            document_embeddings: Pre-computed document embeddings (N x embedding_dim)
+        
+        Returns:
+            List of dependency score dictionaries
+        """
+        dep_embeddings = self._get_dependency_embeddings()
+        
+        if dep_embeddings is None or document_embeddings is None:
+            logger.warning("Embeddings not available, cannot classify batch")
+            return [{dep: 0.0 for dep in self._dependency_order} for _ in range(len(document_embeddings))]
+        
+        results = []
+        
+        # Process each document embedding
+        for doc_embedding in document_embeddings:
+            scores = {}
+            for i, dep_name in enumerate(self._dependency_order):
+                similarity = self.relevance_scorer.cosine_similarity(
+                    doc_embedding,
+                    dep_embeddings[i]
+                )
+                # Normalize to 0-1 range (cosine can be negative)
+                normalized = max(0.0, min(1.0, (similarity + 1) / 2))
+                scores[dep_name] = round(normalized, 3)
+            
+            results.append(scores)
+        
+        return results
+

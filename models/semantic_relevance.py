@@ -238,3 +238,52 @@ class SemanticRelevanceScorer:
         )
         
         return sorted_docs[:top_k]
+    
+    def score_batch_optimized(
+        self,
+        event_description: str,
+        documents: List[str],
+        cache_event_embedding: bool = True
+    ) -> Tuple[List[Tuple[float, bool]], Optional[np.ndarray]]:
+        """
+        Optimized batch scoring that returns both scores and document embeddings.
+        
+        This method is designed for maximum performance when you need both
+        relevance scores AND document embeddings (e.g., for dependency classification).
+        
+        Args:
+            event_description: Event description
+            documents: List of document texts
+            cache_event_embedding: If True, cache event embedding for reuse
+        
+        Returns:
+            Tuple of (scores_list, document_embeddings)
+            - scores_list: List of (score, passed) tuples
+            - document_embeddings: Numpy array of document embeddings (or None if fallback)
+        """
+        if not documents:
+            return [], None
+        
+        # Encode all at once for efficiency
+        all_texts = [event_description] + documents
+        embeddings = self.encode(all_texts)
+        
+        if embeddings is None:
+            # Fallback for each document
+            scores = [
+                self._keyword_fallback(event_description, doc)
+                for doc in documents
+            ]
+            return scores, None
+        
+        event_embedding = embeddings[0]
+        doc_embeddings = embeddings[1:]
+        
+        # Compute all similarities at once
+        results = []
+        for doc_embedding in doc_embeddings:
+            similarity = self.cosine_similarity(event_embedding, doc_embedding)
+            passed = similarity >= self.threshold
+            results.append((similarity, passed))
+        
+        return results, doc_embeddings
