@@ -234,6 +234,45 @@ class WebScraper:
             images=images[:10]
         )
     
+    def _scrape_with_playwright(self, url: str) -> Optional[ScrapedPage]:
+        """
+        Scrape using Playwright (sync) for JS-heavy sites or to bypass blocking.
+        """
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            logger.warning("Playwright not installed, skipping fallback")
+            return None
+            
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context(
+                    viewport={'width': 1920, 'height': 1080},
+                    user_agent=self._get_user_agent()
+                )
+                page = context.new_page()
+                
+                try:
+                    # Navigate
+                    page.goto(url, timeout=self.timeout * 1000, wait_until="domcontentloaded")
+                    # Wait for body to be present
+                    page.wait_for_selector("body", timeout=5000)
+                except Exception as e:
+                    logger.warning(f"Playwright navigation failed: {e}")
+                    browser.close()
+                    return None
+                
+                content = page.content()
+                browser.close()
+                
+                # Use existing extraction logic
+                return self._extract_with_beautifulsoup(url, content)
+                
+        except Exception as e:
+            logger.error(f"Playwright scraping failed: {e}")
+            return None
+
     def scrape(self, url: str, use_newspaper: bool = True) -> Optional[ScrapedPage]:
         """
         Scrape a web page.
@@ -254,7 +293,7 @@ class WebScraper:
             if result and result.text:
                 return result
         
-        # Fallback to basic scraping
+        # Try requests first (faster)
         for attempt in range(self.max_retries):
             try:
                 headers = {
@@ -272,6 +311,10 @@ class WebScraper:
                 
                 if response.status_code == 200:
                     return self._extract_with_beautifulsoup(url, response.text)
+                elif response.status_code in [401, 403]:
+                    logger.warning(f"Access denied ({response.status_code}) for {url}")
+                    # Break loop to try Playwright
+                    break
                 else:
                     logger.warning(f"HTTP {response.status_code} for {url}")
                     
@@ -283,7 +326,9 @@ class WebScraper:
             if attempt < self.max_retries - 1:
                 time.sleep(2 ** attempt)  # Exponential backoff
         
-        return None
+        # Fallback to Playwright
+        logger.info(f"Falling back to Playwright for {url}")
+        return self._scrape_with_playwright(url)
     
     def scrape_multiple(
         self,

@@ -13,6 +13,7 @@ newspaper3k>=0.2.8
 
 # Browser Automation (optional - for JS-heavy sites)
 playwright>=1.41.0
+curl_cffi>=0.5.10
 
 # Reddit API
 praw>=7.7.1
