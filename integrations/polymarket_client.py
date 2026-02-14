@@ -26,6 +26,7 @@ class MarketData:
     probability: float
     volume: float
     liquidity: float
+    start_date: Optional[datetime]
     end_date: Optional[datetime]
     outcome_prices: Dict[str, float]
     fetched_at: datetime
@@ -37,6 +38,7 @@ class MarketData:
             "probability": self.probability,
             "volume": self.volume,
             "liquidity": self.liquidity,
+            "start_date": self.start_date.isoformat() if self.start_date else None,
             "end_date": self.end_date.isoformat() if self.end_date else None,
             "outcome_prices": self.outcome_prices,
             "fetched_at": self.fetched_at.isoformat()
@@ -106,6 +108,11 @@ class PolymarketClient:
                     probability=probability,
                     volume=float(event.get("volume", 0) or 0),
                     liquidity=float(event.get("liquidity", 0) or 0),
+                    start_date=(
+                        self._parse_date(event.get("startDate")) or
+                        self._parse_date(event.get("createdAt")) or
+                        self._parse_date(event.get("creationDate"))
+                    ),
                     end_date=self._parse_date(event.get("endDate")),
                     outcome_prices={"yes": probability, "no": 1 - probability},
                     fetched_at=_utc_now()
@@ -121,6 +128,11 @@ class PolymarketClient:
                 probability=probability,
                 volume=float(primary_market.get("volume", 0) or 0),
                 liquidity=float(primary_market.get("liquidity", 0) or 0),
+                start_date=(
+                    self._parse_date(event.get("startDate")) or
+                    self._parse_date(event.get("createdAt")) or
+                    self._parse_date(event.get("creationDate"))
+                ),
                 end_date=self._parse_date(event.get("endDate")),
                 outcome_prices={"yes": probability, "no": 1 - probability},
                 fetched_at=_utc_now()

@@ -172,6 +172,18 @@ class BuildGraphRequest(BaseModel):
         default=200,
         description="Maximum edges to include"
     )
+    market_window_only: bool = Field(
+        default=False,
+        description="Filter graph nodes to market active window"
+    )
+    window_start: Optional[datetime] = Field(
+        default=None,
+        description="Optional explicit lower bound for node timestamps (UTC)"
+    )
+    window_end: Optional[datetime] = Field(
+        default=None,
+        description="Optional explicit upper bound for node timestamps (UTC)"
+    )
 
 
 class BuildGraphResponse(BaseModel):
@@ -448,7 +460,10 @@ async def build_belief_graph(
         graph = builder.build(
             event_id,
             max_events=request.max_events,
-            max_edges=request.max_edges
+            max_edges=request.max_edges,
+            market_window_only=request.market_window_only,
+            window_start=request.window_start,
+            window_end=request.window_end,
         )
         
         # Save to storage

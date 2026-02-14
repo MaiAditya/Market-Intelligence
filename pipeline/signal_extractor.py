@@ -301,6 +301,9 @@ class SignalExtractor:
         """
         Extract signals for all relevant documents of an event.
         
+        Uses batch encoding to process all documents at once instead of
+        encoding each document individually (2x per doc for type+direction).
+        
         Args:
             event_id: Event ID
             save_signals: Whether to save signals to disk
@@ -316,9 +319,71 @@ class SignalExtractor:
         logger.info(f"Extracting signals for event: {event_id}")
         relevant_docs = self.mapper.get_relevant_documents(event)
         
+        if not relevant_docs:
+            logger.info(f"No relevant documents for event {event_id}")
+            return []
+        
+        # --- Batch encode all document texts at once ---
+        logger.info(f"Batch encoding {len(relevant_docs)} documents for signal extraction...")
+        all_texts = [doc.raw_text[:2048] for doc, _ in relevant_docs]
+        
+        # Use the shared relevance scorer to encode all at once
+        relevance_scorer = self.type_classifier.relevance_scorer
+        all_embeddings = relevance_scorer.encode(all_texts)
+        
+        # Ensure type/direction reference embeddings are pre-computed
+        self.type_classifier._get_type_embeddings()
+        self.direction_classifier._get_direction_embeddings()
+        
         signals = []
-        for doc, mapping in relevant_docs:
-            signal = self.extract_signal(doc, mapping)
+        for i, (doc, mapping) in enumerate(relevant_docs):
+            # Use pre-computed embedding if available, else fall back
+            if all_embeddings is not None:
+                doc_embedding = all_embeddings[i]
+                signal_type, type_confidence = self.type_classifier.get_best_type_from_embedding(doc_embedding)
+                direction, direction_confidence = self.direction_classifier.get_direction_from_embedding(doc_embedding)
+            else:
+                # Fallback to per-doc encoding
+                signal_type, type_confidence = self.type_classifier.get_best_type(doc.raw_text)
+                direction, direction_confidence = self.direction_classifier.get_direction(doc.raw_text)
+            
+            # Determine origin
+            origin = self._determine_origin(doc)
+            
+            # Get source credibility
+            source_credibility = get_source_credibility(doc.url)
+            if source_credibility == 0.5:
+                source_credibility = get_source_type_credibility(doc.source_type)
+            
+            # Calculate magnitude and confidence
+            magnitude = self._calculate_magnitude(
+                mapping.relevance_score,
+                mapping.dependency_scores,
+                source_credibility
+            )
+            
+            confidence = self._calculate_confidence(
+                doc, mapping, source_credibility,
+                type_confidence, direction_confidence
+            )
+            
+            signal_id = f"sig_{doc.doc_id[:12]}_{mapping.event_id[:12]}"
+            
+            signal = Signal(
+                signal_id=signal_id,
+                event_id=mapping.event_id,
+                doc_id=doc.doc_id,
+                signal_type=signal_type,
+                direction=direction,
+                origin=origin,
+                magnitude=round(magnitude, 4),
+                confidence=round(confidence, 4),
+                source_url=doc.url,
+                source_credibility=round(source_credibility, 4),
+                relevance_score=mapping.relevance_score,
+                top_dependencies=mapping.top_dependencies
+            )
+            
             signals.append(signal)
             
             if save_signals:

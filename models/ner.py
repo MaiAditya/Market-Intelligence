@@ -339,6 +339,87 @@ class NERExtractor:
         
         return unique_entities
     
+    def batch_extract(self, texts: List[str], batch_size: int = 16) -> List[List[ExtractedEntity]]:
+        """
+        Extract entities from multiple texts using batched BERT inference.
+        
+        Much faster than calling extract() in a loop because the HF pipeline
+        processes all texts in GPU-batched chunks.
+        
+        Args:
+            texts: List of texts to extract from
+            batch_size: Batch size for BERT inference
+        
+        Returns:
+            List of entity lists, one per input text
+        """
+        if not texts:
+            return []
+        
+        pipeline = self._get_ner_pipeline()
+        max_len = self.model_manager.get_max_sequence_length()
+        
+        # Truncate all texts
+        truncated = [
+            t[:max_len * 4] if len(t) > max_len * 4 else t
+            for t in texts
+        ]
+        
+        # --- Batched BERT NER ---
+        all_bert_results = [[] for _ in range(len(texts))]
+        if pipeline is not None:
+            try:
+                batch_results = pipeline(truncated, batch_size=batch_size)
+                # pipeline returns List[List[dict]] when given a list of strings
+                if batch_results and isinstance(batch_results[0], dict):
+                    # Single text was passed (shouldn't happen, but guard)
+                    batch_results = [batch_results]
+                all_bert_results = batch_results
+            except Exception as e:
+                logger.error(f"Batched BERT NER failed: {e}")
+        
+        label_map = {
+            "ORG": "ORG", "B-ORG": "ORG", "I-ORG": "ORG",
+            "PER": "PERSON", "B-PER": "PERSON", "I-PER": "PERSON",
+            "LOC": "LOCATION", "B-LOC": "LOCATION", "I-LOC": "LOCATION",
+            "MISC": "MISC", "B-MISC": "MISC", "I-MISC": "MISC",
+        }
+        
+        results = []
+        for idx, text in enumerate(texts):
+            all_entities = []
+            
+            # BERT entities for this text
+            for result in all_bert_results[idx]:
+                entity_type = label_map.get(result.get("entity_group", ""), "MISC")
+                confidence = result.get("score", 0.0)
+                if confidence >= self.min_confidence:
+                    all_entities.append(ExtractedEntity(
+                        text=result.get("word", ""),
+                        entity_type=entity_type,
+                        confidence=confidence,
+                        start=result.get("start", 0),
+                        end=result.get("end", 0)
+                    ))
+            
+            # Custom regex extractors (already fast)
+            all_entities.extend(ModelNameExtractor.extract(text))
+            all_entities.extend(DateExtractor.extract(text))
+            all_entities.extend(BenchmarkExtractor.extract(text))
+            
+            # Deduplicate
+            seen = set()
+            unique = []
+            for entity in all_entities:
+                key = (entity.text.lower(), entity.entity_type)
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(entity)
+            unique.sort(key=lambda e: e.start)
+            results.append(unique)
+        
+        return results
+    
     def extract_to_dict(self, text: str) -> List[Dict]:
         """Extract entities and return as dictionaries."""
         entities = self.extract(text)

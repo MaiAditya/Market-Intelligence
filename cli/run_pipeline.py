@@ -16,6 +16,7 @@ Usage:
 import argparse
 import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 
 # Add project root to path for imports
@@ -196,6 +197,13 @@ def cmd_build_graph(args):
         builder = GraphBuilder()
         storage = get_storage()
         
+        parsed_start = None
+        parsed_end = None
+        if args.window_start:
+            parsed_start = datetime.fromisoformat(args.window_start.replace("Z", "+00:00")).replace(tzinfo=None)
+        if args.window_end:
+            parsed_end = datetime.fromisoformat(args.window_end.replace("Z", "+00:00")).replace(tzinfo=None)
+        
         # Check if exists and not forcing rebuild
         if not args.rebuild and storage.exists(args.event):
             print(f"Graph already exists for {args.event}")
@@ -208,7 +216,10 @@ def cmd_build_graph(args):
         graph = builder.build(
             args.event,
             max_events=args.max_events,
-            max_edges=args.max_edges
+            max_edges=args.max_edges,
+            market_window_only=args.market_window_only,
+            window_start=parsed_start,
+            window_end=parsed_end,
         )
         
         # Save
@@ -525,6 +536,19 @@ Examples:
         type=int,
         default=200,
         help="Maximum edges to include (default: 200)"
+    )
+    build_graph_parser.add_argument(
+        "--market-window-only",
+        action="store_true",
+        help="Filter graph nodes to market active window (start/end)"
+    )
+    build_graph_parser.add_argument(
+        "--window-start",
+        help="Optional explicit window start (ISO datetime)"
+    )
+    build_graph_parser.add_argument(
+        "--window-end",
+        help="Optional explicit window end (ISO datetime)"
     )
     build_graph_parser.add_argument(
         "-o", "--output",

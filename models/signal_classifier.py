@@ -178,12 +178,38 @@ class SignalTypeClassifier:
         
         return scores
     
+    def classify_from_embedding(self, doc_embedding) -> Dict[str, float]:
+        """
+        Classify signal type from a pre-computed document embedding.
+        Avoids re-encoding the document text.
+        """
+        type_embeddings = self._get_type_embeddings()
+        if type_embeddings is None:
+            return {}
+        
+        scores = {}
+        for i, signal_type in enumerate(self._type_order):
+            similarity = self.relevance_scorer.cosine_similarity(
+                doc_embedding, type_embeddings[i]
+            )
+            normalized = max(0.0, min(1.0, (similarity + 1) / 2))
+            scores[signal_type] = round(normalized, 3)
+        return scores
+
     def get_best_type(self, text: str) -> Tuple[str, float]:
         """Get the best matching signal type."""
         scores = self.classify(text)
         if not scores:
             return "rumor", 0.5  # Default
         
+        best_type = max(scores, key=scores.get)
+        return best_type, scores[best_type]
+
+    def get_best_type_from_embedding(self, doc_embedding) -> Tuple[str, float]:
+        """Get the best matching signal type from a pre-computed embedding."""
+        scores = self.classify_from_embedding(doc_embedding)
+        if not scores:
+            return "rumor", 0.5
         best_type = max(scores, key=scores.get)
         return best_type, scores[best_type]
 
@@ -346,6 +372,26 @@ class DirectionClassifier:
         else:
             return {"positive": 0.33, "negative": 0.33, "neutral": 0.5}
     
+    def classify_from_embedding(self, doc_embedding) -> Dict[str, float]:
+        """
+        Classify direction from a pre-computed document embedding.
+        Avoids re-encoding the document text.
+        """
+        self._classification_count += 1
+        dir_embeddings = self._get_direction_embeddings()
+        if dir_embeddings is None:
+            self._fallback_count += 1
+            return {}
+        
+        scores = {}
+        for i, direction in enumerate(self._direction_order):
+            similarity = self.relevance_scorer.cosine_similarity(
+                doc_embedding, dir_embeddings[i]
+            )
+            normalized = max(0.0, min(1.0, (similarity + 1) / 2))
+            scores[direction] = round(normalized, 3)
+        return scores
+
     def get_direction(self, text: str) -> Tuple[str, float]:
         """Get the dominant direction."""
         scores = self.classify(text)
@@ -354,6 +400,14 @@ class DirectionClassifier:
         
         direction = max(scores, key=scores.get)
         return direction, scores[direction]
+
+    def get_direction_from_embedding(self, doc_embedding) -> Tuple[str, float]:
+        """Get the dominant direction from a pre-computed embedding."""
+        scores = self.classify_from_embedding(doc_embedding)
+        if not scores:
+            return "neutral", 0.5
+        best_direction = max(scores, key=scores.get)
+        return best_direction, scores[best_direction]
     
     def get_health_status(self) -> Dict:
         """

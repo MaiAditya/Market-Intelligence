@@ -32,13 +32,25 @@ from models.dependency_classifier import DependencyClassifier
 
 logger = logging.getLogger(__name__)
 
+# ------------------------------------------------------------------ #
+#  Adaptive relevance thresholds per event type (Phase 3)             #
+# ------------------------------------------------------------------ #
+DEFAULT_THRESHOLDS: Dict[str, float] = {
+    "regulation": 0.35,      # Broader language variance across jurisdictions
+    "model_release": 0.45,   # More precise terminology
+    "capability": 0.40,
+    "market": 0.40,
+    "general": 0.40,
+}
+GLOBAL_DEFAULT_THRESHOLD: float = 0.40
 
 @dataclass
 class DocumentMapping:
     """
     Result of mapping a document to an event.
     
-    Contains all 3 stages of mapping results.
+    Contains all 3 stages of mapping results plus Phase 3 soft-gate
+    and adaptive-threshold metadata.
     """
     doc_id: str
     event_id: str
@@ -61,26 +73,38 @@ class DocumentMapping:
     is_relevant: bool
     mapped_at: datetime = field(default_factory=datetime.utcnow)
     
+    # Phase 3: Soft Entity Gate  (defaults keep backward compat)
+    soft_gate_passed: bool = False
+    soft_entity_score: float = 0.0
+    relevance_threshold_used: float = GLOBAL_DEFAULT_THRESHOLD
+    temporal_factor: float = 1.0
+    adjusted_relevance_score: float = 0.0
+    
     def to_dict(self) -> dict:
         """Convert to dictionary."""
         return {
             "doc_id": self.doc_id,
             "event_id": self.event_id,
             "entity_gate_passed": self.entity_gate_passed,
+            "soft_gate_passed": self.soft_gate_passed,
             "primary_entities_matched": self.primary_entities_matched,
             "secondary_entities_matched": self.secondary_entities_matched,
             "aliases_matched": self.aliases_matched,
+            "soft_entity_score": self.soft_entity_score,
             "relevance_score": self.relevance_score,
             "relevance_passed": self.relevance_passed,
+            "relevance_threshold_used": self.relevance_threshold_used,
             "dependency_scores": self.dependency_scores,
             "top_dependencies": self.top_dependencies,
+            "temporal_factor": self.temporal_factor,
+            "adjusted_relevance_score": self.adjusted_relevance_score,
             "is_relevant": self.is_relevant,
             "mapped_at": self.mapped_at.isoformat()
         }
     
     @classmethod
     def from_dict(cls, data: dict) -> "DocumentMapping":
-        """Create from dictionary."""
+        """Create from dictionary (backward-compatible with old format)."""
         mapped_at = _utc_now()
         if data.get("mapped_at"):
             mapped_at = datetime.fromisoformat(data["mapped_at"])
@@ -97,7 +121,13 @@ class DocumentMapping:
             dependency_scores=data.get("dependency_scores", {}),
             top_dependencies=data.get("top_dependencies", []),
             is_relevant=data["is_relevant"],
-            mapped_at=mapped_at
+            mapped_at=mapped_at,
+            # Phase 3 fields — safe defaults for old data
+            soft_gate_passed=data.get("soft_gate_passed", False),
+            soft_entity_score=data.get("soft_entity_score", 0.0),
+            relevance_threshold_used=data.get("relevance_threshold_used", GLOBAL_DEFAULT_THRESHOLD),
+            temporal_factor=data.get("temporal_factor", 1.0),
+            adjusted_relevance_score=data.get("adjusted_relevance_score", 0.0),
         )
 
 
@@ -173,6 +203,47 @@ class EntityGate:
         return passed, primary_matches, secondary_matches, alias_matches
 
 
+class SoftEntityGate:
+    """
+    Phase 3: Soft Entity Gate
+
+    When the hard EntityGate fails, check whether semantic similarity
+    between the document and the event description is very high.
+    If the similarity exceeds ``soft_threshold`` the document is flagged
+    as a "probable match" rather than being silently discarded.
+    """
+
+    def __init__(self, soft_threshold: float = 0.85):
+        self.soft_threshold = soft_threshold
+
+    def check(
+        self,
+        doc: NormalizedDocument,
+        event: Event,
+        relevance_scorer: "SemanticRelevanceScorer",
+    ) -> Tuple[bool, float]:
+        """
+        Check if the document passes the soft entity gate.
+
+        Args:
+            doc: Normalized document
+            event: Event to check against
+            relevance_scorer: Shared semantic relevance scorer instance
+
+        Returns:
+            Tuple of (soft_gate_passed, semantic_score)
+        """
+        score, _ = relevance_scorer.score_relevance(
+            event.event_description, doc.raw_text
+        )
+        passed = score >= self.soft_threshold
+        if passed:
+            logger.info(
+                f"Soft gate PASSED for doc {doc.doc_id} (score={score:.3f})"
+            )
+        return passed, score
+
+
 class EventMapper:
     """
     3-stage event-document mapping pipeline.
@@ -207,6 +278,7 @@ class EventMapper:
         
         # Initialize components
         self.entity_gate = EntityGate()
+        self.soft_entity_gate = SoftEntityGate()
         self.relevance_scorer = SemanticRelevanceScorer()
         self.dependency_classifier = DependencyClassifier()
         logger.info("EventMapper initialized")
@@ -220,17 +292,21 @@ class EventMapper:
         """
         Map a single document to an event through all 3 stages.
         
+        If the hard entity gate fails and ``require_entity_gate`` is True,
+        the soft entity gate is tried next.  A soft-gate pass allows
+        Stages 2-3 to run but marks the result as ``soft_gate_passed``.
+        
         Args:
             doc: Normalized document
             event: Event to map against
-            require_entity_gate: If True, skip Stage 2-3 if Stage 1 fails
+            require_entity_gate: If True, skip Stage 2-3 if both gates fail
         
         Returns:
             DocumentMapping result
         """
         logger.debug(f"Mapping document {doc.doc_id} to event {event.event_id}")
         
-        # Stage 1: Entity Gate
+        # Stage 1: Hard Entity Gate
         (
             gate_passed,
             primary_matches,
@@ -238,22 +314,30 @@ class EventMapper:
             alias_matches
         ) = self.entity_gate.check(doc, event)
         
-        # Early exit if gate fails and required
+        # Phase 3: Try soft gate if hard gate fails
+        soft_passed = False
+        soft_score = 0.0
+        
         if require_entity_gate and not gate_passed:
-            logger.debug(f"Document {doc.doc_id} failed entity gate")
-            return DocumentMapping(
-                doc_id=doc.doc_id,
-                event_id=event.event_id,
-                entity_gate_passed=False,
-                primary_entities_matched=primary_matches,
-                secondary_entities_matched=secondary_matches,
-                aliases_matched=alias_matches,
-                relevance_score=0.0,
-                relevance_passed=False,
-                dependency_scores={},
-                top_dependencies=[],
-                is_relevant=False
+            soft_passed, soft_score = self.soft_entity_gate.check(
+                doc, event, self.relevance_scorer
             )
+            if not soft_passed:
+                logger.debug(f"Document {doc.doc_id} failed both entity gates")
+                return DocumentMapping(
+                    doc_id=doc.doc_id,
+                    event_id=event.event_id,
+                    entity_gate_passed=False,
+                    primary_entities_matched=primary_matches,
+                    secondary_entities_matched=secondary_matches,
+                    aliases_matched=alias_matches,
+                    relevance_score=0.0,
+                    relevance_passed=False,
+                    dependency_scores={},
+                    top_dependencies=[],
+                    is_relevant=False,
+                    soft_entity_score=soft_score,
+                )
         
         # Stage 2: Semantic Relevance
         logger.debug(f"Stage 2: Computing semantic relevance for {doc.doc_id}")
@@ -271,21 +355,24 @@ class EventMapper:
             if score >= 0.3
         ][:3]
         
-        # Overall relevance: passed entity gate AND semantic threshold
-        is_relevant = gate_passed and relevance_passed
+        # Overall relevance: (hard OR soft) gate AND semantic threshold
+        is_relevant = (gate_passed or soft_passed) and relevance_passed
         
         logger.debug(
             f"Mapping complete for {doc.doc_id}: "
-            f"relevant={is_relevant}, score={relevance_score:.3f}"
+            f"relevant={is_relevant}, score={relevance_score:.3f}, "
+            f"soft_gate={soft_passed}"
         )
         
         return DocumentMapping(
             doc_id=doc.doc_id,
             event_id=event.event_id,
             entity_gate_passed=gate_passed,
+            soft_gate_passed=soft_passed,
             primary_entities_matched=primary_matches,
             secondary_entities_matched=secondary_matches,
             aliases_matched=alias_matches,
+            soft_entity_score=soft_score,
             relevance_score=round(relevance_score, 4),
             relevance_passed=relevance_passed,
             dependency_scores=dependency_scores,

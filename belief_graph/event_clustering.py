@@ -15,10 +15,11 @@ with references to all 5 source documents.
 """
 
 import logging
+import math
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -85,13 +86,16 @@ class EventClusterer:
     Clusters similar events using semantic similarity.
     
     Uses sentence-transformers to compute embeddings and groups events
-    with cosine similarity above a threshold.
+    via Hierarchical Agglomerative Clustering (average linkage) with a
+    temporal window constraint to prevent chronologically distant events
+    from merging.
     """
     
     def __init__(
         self,
         similarity_threshold: float = 0.75,
-        model_name: str = "all-mpnet-base-v2"
+        model_name: str = "all-mpnet-base-v2",
+        time_window_hours: float = 48,
     ):
         """
         Initialize the event clusterer.
@@ -99,15 +103,19 @@ class EventClusterer:
         Args:
             similarity_threshold: Minimum cosine similarity to cluster events (0.0-1.0)
             model_name: Sentence transformer model to use
+            time_window_hours: Maximum time difference (in hours) between events to
+                              allow clustering.  Pairs outside this window get their
+                              similarity forced to 0 before clustering.
         """
         self.similarity_threshold = similarity_threshold
         self.model_name = model_name
+        self.time_window_hours = time_window_hours
         self._model = None
         self._model_loaded = False
         
         logger.info(
             f"EventClusterer initialized with threshold={similarity_threshold}, "
-            f"model={model_name}"
+            f"model={model_name}, time_window={time_window_hours}h"
         )
     
     def _load_model(self):
@@ -199,49 +207,130 @@ class EventClusterer:
         
         return similarity
     
+    def _apply_temporal_mask(
+        self,
+        events: List[EventNode],
+        similarity_matrix: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Zero out similarity for event pairs that are temporally distant.
+
+        If either event has ``timestamp=None`` the pair is left unmasked
+        (conservative — we allow the merge when time is unknown).
+
+        Args:
+            events: List of events
+            similarity_matrix: Raw cosine-similarity matrix (n×n)
+
+        Returns:
+            A *copy* of the similarity matrix with out-of-window pairs zeroed.
+        """
+        masked = similarity_matrix.copy()
+        n = len(events)
+        window_seconds = self.time_window_hours * 3600
+
+        for i in range(n):
+            for j in range(i + 1, n):
+                ts_i = events[i].timestamp
+                ts_j = events[j].timestamp
+                if ts_i is None or ts_j is None:
+                    continue  # can't judge — leave similarity intact
+                time_diff = abs((ts_i - ts_j).total_seconds())
+                if time_diff > window_seconds:
+                    masked[i, j] = 0.0
+                    masked[j, i] = 0.0
+
+        return masked
+
     def _cluster_by_similarity(
         self,
         events: List[EventNode],
-        similarity_matrix: np.ndarray
+        similarity_matrix: np.ndarray,
     ) -> List[List[int]]:
         """
-        Group events into clusters using agglomerative approach.
-        
-        Uses a simple greedy clustering algorithm:
-        1. Start with each event as its own cluster
-        2. Merge clusters where max similarity exceeds threshold
-        
+        Group events into clusters using Hierarchical Agglomerative
+        Clustering (HAC) with **average linkage**.
+
+        Average linkage avoids the single-linkage chaining problem by
+        requiring the *mean* pairwise similarity of a merge to exceed
+        the threshold, rather than just a single pair.
+
+        Before clustering the similarity matrix is masked by temporal
+        proximity so chronologically distant events cannot merge.
+
         Args:
             events: List of events
             similarity_matrix: Pairwise similarity matrix
-        
+
         Returns:
             List of clusters (each cluster is a list of event indices)
         """
         n = len(events)
-        
-        # Track which cluster each event belongs to
-        cluster_assignment = list(range(n))  # Start with each event in own cluster
-        
-        # Find pairs above threshold and merge
+
+        if n <= 1:
+            return [[i] for i in range(n)]
+
+        # --- Phase 1: temporal mask ---
+        masked_sim = self._apply_temporal_mask(events, similarity_matrix)
+
+        # --- Phase 2: HAC with average linkage ---
+        # Convert similarity → distance (sklearn expects distance)
+        distance_matrix = 1.0 - masked_sim
+        np.fill_diagonal(distance_matrix, 0.0)  # self-distance = 0
+        # Clamp any floating-point noise
+        distance_matrix = np.clip(distance_matrix, 0.0, 2.0)
+
+        distance_threshold = 1.0 - self.similarity_threshold
+
+        try:
+            from sklearn.cluster import AgglomerativeClustering
+
+            clustering = AgglomerativeClustering(
+                n_clusters=None,
+                metric="precomputed",
+                linkage="average",
+                distance_threshold=distance_threshold,
+            )
+            labels = clustering.fit_predict(distance_matrix)
+        except Exception as e:
+            logger.warning(
+                f"HAC clustering failed ({e}), falling back to greedy merge"
+            )
+            return self._cluster_greedy_fallback(events, masked_sim)
+
+        # Convert labels → list of clusters
+        cluster_dict: Dict[int, List[int]] = defaultdict(list)
+        for idx, label in enumerate(labels):
+            cluster_dict[int(label)].append(idx)
+
+        return list(cluster_dict.values())
+
+    # ------------------------------------------------------------------ #
+    #  Legacy fallback (kept for safety if sklearn is unavailable)        #
+    # ------------------------------------------------------------------ #
+    def _cluster_greedy_fallback(
+        self,
+        events: List[EventNode],
+        similarity_matrix: np.ndarray,
+    ) -> List[List[int]]:
+        """Greedy single-linkage fallback used if HAC is unavailable."""
+        n = len(events)
+        cluster_assignment = list(range(n))
+
         for i in range(n):
             for j in range(i + 1, n):
                 if similarity_matrix[i, j] >= self.similarity_threshold:
-                    # Merge clusters
                     old_cluster = cluster_assignment[j]
                     new_cluster = cluster_assignment[i]
-                    
                     if old_cluster != new_cluster:
-                        # Move all events from old_cluster to new_cluster
                         for k in range(n):
                             if cluster_assignment[k] == old_cluster:
                                 cluster_assignment[k] = new_cluster
-        
-        # Convert to list of clusters
+
         cluster_dict: Dict[int, List[int]] = defaultdict(list)
         for idx, cluster_id in enumerate(cluster_assignment):
             cluster_dict[cluster_id].append(idx)
-        
+
         return list(cluster_dict.values())
     
     def _select_canonical_event(
@@ -307,6 +396,97 @@ class EventClusterer:
         best_idx = scored[0][0]
         return events[best_idx], best_idx
     
+    # ------------------------------------------------------------------ #
+    #  Phase 4: Canonical Event Synthesis                                 #
+    # ------------------------------------------------------------------ #
+    def _synthesize_canonical_event(
+        self,
+        events: List[EventNode],
+        cluster_indices: List[int],
+    ) -> EventNode:
+        """
+        Build a synthesised "super node" that represents the whole cluster.
+
+        The synthesis picks consensus values from all members rather than
+        choosing a single random article as the representative.
+
+        Rules:
+        - **timestamp**: mode day, tie-break to median timestamp
+        - **actors**: union of all unique actors across members
+        - **certainty**: min(0.95, avg_certainty + log(num_sources) * 0.1)
+        - **raw_title**: longest title from members (richest information)
+        - **source**: source of the highest-credibility member
+        - **other fields**: taken from the member selected by
+          ``_select_canonical_event`` (event_type, scope, etc.)
+
+        Args:
+            events: Full list of events
+            cluster_indices: Indices belonging to this cluster
+
+        Returns:
+            A new EventNode with synthesised metadata
+        """
+        if len(cluster_indices) == 1:
+            return events[cluster_indices[0]]
+
+        # Start from the canonical selection (best source / quality)
+        base, _ = self._select_canonical_event(events, cluster_indices)
+
+        # --- Consensus timestamp (mode-day, tie-break median) ---
+        timestamps = [
+            events[i].timestamp
+            for i in cluster_indices
+            if events[i].timestamp is not None
+        ]
+        consensus_ts = base.timestamp
+        if timestamps:
+            # Find mode day
+            day_counts = Counter(ts.date() for ts in timestamps)
+            mode_day = day_counts.most_common(1)[0][0]
+            same_day = [ts for ts in timestamps if ts.date() == mode_day]
+            # Median of timestamps on the mode day
+            same_day.sort()
+            consensus_ts = same_day[len(same_day) // 2]
+
+        # --- Union of actors ---
+        all_actors: Set[str] = set()
+        for idx in cluster_indices:
+            if events[idx].actors:
+                all_actors.update(events[idx].actors)
+
+        # --- Boosted certainty ---
+        avg_certainty = np.mean(
+            [events[i].certainty for i in cluster_indices]
+        )
+        num_sources = len(cluster_indices)
+        synthesised_certainty = min(
+            0.95, float(avg_certainty) + math.log(num_sources) * 0.1
+        )
+
+        # --- Best title (longest = most descriptive) ---
+        best_title = base.raw_title or ""
+        for idx in cluster_indices:
+            candidate = events[idx].raw_title or ""
+            if len(candidate) > len(best_title):
+                best_title = candidate
+
+        # Build synthesised node (copy immutable fields from base)
+        return EventNode(
+            event_id=base.event_id,
+            event_type=base.event_type,
+            timestamp=consensus_ts,
+            actors=list(all_actors)[:15],
+            action=base.action,
+            object=base.object,
+            certainty=round(synthesised_certainty, 4),
+            source=base.source,
+            scope=base.scope,
+            source_doc_id=base.source_doc_id,
+            source_signal_id=base.source_signal_id,
+            raw_title=best_title or base.raw_title,
+            url=base.url,
+        )
+
     def cluster_events(
         self,
         events: List[EventNode],
@@ -338,7 +518,7 @@ class EventClusterer:
         # Compute similarity matrix
         similarity_matrix = self._compute_similarity_matrix(embeddings)
         
-        # Find clusters
+        # Find clusters (Phase 1+2: temporal mask + HAC average linkage)
         clusters = self._cluster_by_similarity(events, similarity_matrix)
         
         logger.info(f"Found {len(clusters)} clusters from {len(events)} events")
@@ -350,15 +530,15 @@ class EventClusterer:
             if len(cluster_indices) < min_cluster_size:
                 continue
             
-            # Select canonical event
-            canonical, canonical_idx = self._select_canonical_event(events, cluster_indices)
+            # Phase 4: Synthesise canonical event instead of picking one
+            canonical = self._synthesize_canonical_event(events, cluster_indices)
             
             # Collect all member information
             member_ids = [events[i].event_id for i in cluster_indices]
             doc_ids = [events[i].source_doc_id for i in cluster_indices if events[i].source_doc_id]
             urls = [events[i].url for i in cluster_indices if events[i].url]
             
-            # Aggregate actors
+            # Aggregate actors (already in canonical, but keep set for ClusteredEvent)
             all_actors: Set[str] = set()
             for idx in cluster_indices:
                 if events[idx].actors:
@@ -374,18 +554,13 @@ class EventClusterer:
                         sims.append(similarity_matrix[idx_i, idx_j])
                 avg_sim = np.mean(sims) if sims else 0.0
             
-            # Cluster confidence (corroboration boost)
-            base_certainty = canonical.certainty
-            corroboration_boost = min(0.15, (len(cluster_indices) - 1) * 0.05)
-            cluster_confidence = min(0.95, base_certainty + corroboration_boost)
-            
             clustered = ClusteredEvent(
                 canonical_event=canonical,
                 member_event_ids=member_ids,
                 source_doc_ids=doc_ids,
                 source_urls=urls,
                 all_actors=all_actors,
-                cluster_confidence=cluster_confidence,
+                cluster_confidence=canonical.certainty,
                 avg_similarity=float(avg_sim),
                 num_sources=len(cluster_indices),
             )
@@ -419,7 +594,8 @@ class EventClusterer:
 def cluster_events(
     events: List[EventNode],
     similarity_threshold: float = 0.75,
-    min_cluster_size: int = 1
+    min_cluster_size: int = 1,
+    time_window_hours: float = 48,
 ) -> List[ClusteredEvent]:
     """
     Convenience function to cluster events.
@@ -428,11 +604,15 @@ def cluster_events(
         events: List of events to cluster
         similarity_threshold: Minimum similarity to group (0.0-1.0)
         min_cluster_size: Minimum events per cluster
+        time_window_hours: Maximum temporal distance for clustering
     
     Returns:
         List of ClusteredEvent objects
     """
-    clusterer = EventClusterer(similarity_threshold=similarity_threshold)
+    clusterer = EventClusterer(
+        similarity_threshold=similarity_threshold,
+        time_window_hours=time_window_hours,
+    )
     return clusterer.cluster_events(events, min_cluster_size=min_cluster_size)
 
 

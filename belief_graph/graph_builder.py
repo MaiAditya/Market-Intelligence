@@ -113,8 +113,11 @@ class GraphBuilder:
         # Direction classifier for content-based sentiment
         self.direction_classifier = DirectionClassifier()
         
-        # Event clusterer for deduplication
-        self.event_clusterer = EventClusterer(similarity_threshold=0.75)
+        # Event clusterer for deduplication (with temporal constraints)
+        self.event_clusterer = EventClusterer(
+            similarity_threshold=0.75,
+            time_window_hours=48,
+        )
         
         # Cache for document directions
         self._direction_cache: Dict[str, Tuple[str, float]] = {}
@@ -441,12 +444,80 @@ class GraphBuilder:
         
         return explanation
     
+    def _filter_events_by_market_window(
+        self,
+        event_nodes: List[EventNode],
+        event: Event,
+        belief: BeliefNode,
+        window_start: Optional[datetime] = None,
+        window_end: Optional[datetime] = None,
+    ) -> List[EventNode]:
+        """
+        Filter events to a market-active time window.
+
+        Priority for window bounds:
+        1. Explicit arguments
+        2. Polymarket market metadata (start/end if available)
+        3. Belief resolution_time as end fallback
+        """
+        # Resolve bounds from Polymarket if explicit values were not provided.
+        pm_market = None
+        if event.polymarket_slug:
+            try:
+                pm_market = self.pm_client.get_market_by_slug(event.polymarket_slug)
+            except Exception as e:
+                logger.warning(f"Could not fetch market window for {event.event_id}: {e}")
+
+        resolved_start = window_start
+        resolved_end = window_end
+
+        if resolved_start is None and pm_market and pm_market.start_date:
+            resolved_start = pm_market.start_date
+        if resolved_end is None:
+            if pm_market and pm_market.end_date:
+                resolved_end = pm_market.end_date
+            elif belief.resolution_time:
+                resolved_end = belief.resolution_time
+
+        if resolved_start is None and resolved_end is None:
+            logger.info("Market window filtering requested but no bounds available; skipping filter")
+            return event_nodes
+
+        filtered: List[EventNode] = []
+        skipped_pre = 0
+        skipped_post = 0
+        missing_ts = 0
+
+        for node in event_nodes:
+            if node.timestamp is None:
+                missing_ts += 1
+                continue
+            if resolved_start and node.timestamp < resolved_start:
+                skipped_pre += 1
+                continue
+            if resolved_end and node.timestamp > resolved_end:
+                skipped_post += 1
+                continue
+            filtered.append(node)
+
+        logger.info(
+            "Market window filter applied: "
+            f"start={resolved_start.isoformat() if resolved_start else 'none'}, "
+            f"end={resolved_end.isoformat() if resolved_end else 'none'}, "
+            f"kept={len(filtered)}/{len(event_nodes)}, "
+            f"skipped_pre={skipped_pre}, skipped_post={skipped_post}, missing_ts={missing_ts}"
+        )
+        return filtered
+    
     def build(
         self,
         belief_event_id: str,
         depth: int = 2,
         max_events: int = 100,
-        max_edges: int = 200
+        max_edges: int = 200,
+        market_window_only: bool = False,
+        window_start: Optional[datetime] = None,
+        window_end: Optional[datetime] = None,
     ) -> BeliefGraph:
         """
         Build belief update graph for a target event.
@@ -456,6 +527,9 @@ class GraphBuilder:
             depth: Graph depth (not currently used for filtering)
             max_events: Maximum number of events to include
             max_edges: Maximum number of edges
+            market_window_only: If True, filter extracted events to market window
+            window_start: Optional explicit lower bound (UTC naive)
+            window_end: Optional explicit upper bound (UTC naive)
         
         Returns:
             Complete BeliefGraph
@@ -492,6 +566,24 @@ class GraphBuilder:
         
         # Use canonical events from clusters
         event_nodes = [c.canonical_event for c in clustered]
+        
+        # Optional: enforce market-active window for graph nodes
+        if market_window_only:
+            event_nodes = self._filter_events_by_market_window(
+                event_nodes,
+                event,
+                belief,
+                window_start=window_start,
+                window_end=window_end,
+            )
+            if not event_nodes:
+                logger.warning("No events remain after market-window filtering")
+                return BeliefGraph(
+                    belief_node=belief,
+                    event_nodes={},
+                    edges=[],
+                    depth=depth
+                )
         
         # Update certainty with cluster corroboration
         for i, cluster in enumerate(clustered):

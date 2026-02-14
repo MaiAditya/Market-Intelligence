@@ -110,6 +110,8 @@ class EntityExtractor:
         """
         Extract entities from all documents for an event.
         
+        Uses batched BERT NER for much faster processing.
+        
         Args:
             event_id: Event ID to process
         
@@ -118,14 +120,36 @@ class EntityExtractor:
         """
         logger.info(f"Processing entities for event: {event_id}")
         docs = self.normalizer.load_all_for_event(event_id)
-        updated = []
         
-        for doc in docs:
-            if not doc.extracted_entities:  # Only if not already extracted
-                entities = self.extract_from_document(doc)
-                doc.extracted_entities = entities
-                self.normalizer.save(doc)
-                updated.append(doc)
+        # Filter to docs that need extraction
+        needs_extraction = [doc for doc in docs if not doc.extracted_entities]
+        
+        if not needs_extraction:
+            logger.info(f"All {len(docs)} documents already have entities extracted")
+            return []
+        
+        logger.info(f"Batched NER extraction for {len(needs_extraction)} documents...")
+        
+        # Combine title + text for each doc (matching the original per-doc logic)
+        combined_texts = [f"{doc.title}\n{doc.raw_text}" for doc in needs_extraction]
+        
+        # Batch extract using the new NERExtractor.batch_extract method
+        all_entity_lists = self.ner.batch_extract(combined_texts, batch_size=16)
+        
+        updated = []
+        for doc, entities in zip(needs_extraction, all_entity_lists):
+            # Deduplicate by text + type (same logic as extract_from_document)
+            seen = set()
+            unique = []
+            for entity in entities:
+                key = (entity.text.lower(), entity.entity_type)
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(entity)
+            
+            doc.extracted_entities = [e.to_dict() for e in unique]
+            self.normalizer.save(doc)
+            updated.append(doc)
         
         logger.info(
             f"Extracted entities from {len(updated)} documents "

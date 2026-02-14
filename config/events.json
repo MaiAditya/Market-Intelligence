@@ -126,6 +126,35 @@
         "public_narrative"
       ],
       "polymarket_slug": "gemini-3pt5-released-by-june-30"
+    },
+    {
+      "event_id": "iphone-17e-announce-feb-2026",
+      "event_type": "model_release",
+      "event_title": "Apple Announces iPhone 17e by Feb 28",
+      "event_description": "Apple officially announcing the iPhone 17e (or Slim/Air) device by February 28, 2026",
+      "primary_entities": [
+        "iPhone 17e",
+        "Apple"
+      ],
+      "secondary_entities": [
+        "iPhone 17 Slim",
+        "iPhone 17 Air",
+        "Tim Cook",
+        "Apple Event"
+      ],
+      "aliases": [
+        "iPhone 17e",
+        "iPhone 17 Slim",
+        "iPhone 17 Air"
+      ],
+      "deadline": "2026-02-28T23:59:59Z",
+      "dependencies": [
+        "executive_statement",
+        "public_narrative",
+        "regulation",
+        "compute"
+      ],
+      "polymarket_slug": "will-apple-announce-the-iphone-17e-by-february-28"
     }
   ],
   "dependency_descriptions": {

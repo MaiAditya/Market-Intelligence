@@ -59,7 +59,7 @@ class EventImpact:
     
     # Metadata
     window_minutes: int = 2
-    data_quality: str = "missing"     # exact | interpolated | missing
+    data_quality: str = "missing"     # exact | interpolated | widened_window | out_of_range | missing
     before_offset_seconds: Optional[int] = None   # How far before event the price point is
     after_offset_seconds: Optional[int] = None     # How far after event the price point is
     token_id: Optional[str] = None
@@ -87,6 +87,7 @@ class PolymarketImpactAnalyzer:
     def __init__(
         self,
         window_minutes: int = 2,
+        fallback_window_minutes: int = 60,
         fidelity: int = 1,
         output_dir: Optional[Path] = None,
         timeout: int = 30
@@ -94,11 +95,13 @@ class PolymarketImpactAnalyzer:
         """
         Args:
             window_minutes: ±minutes around event to measure impact
+            fallback_window_minutes: Wider matching window used when strict window fails
             fidelity: Price history granularity in minutes
             output_dir: Directory for output files
             timeout: HTTP request timeout
         """
         self.window_minutes = window_minutes
+        self.fallback_window_minutes = max(window_minutes, fallback_window_minutes)
         self.fidelity = fidelity
         self.output_dir = Path(output_dir or "data/impact_analysis")
         self.timeout = timeout
@@ -111,6 +114,7 @@ class PolymarketImpactAnalyzer:
         
         # Cache for price history
         self._price_cache: Dict[str, List[PricePoint]] = {}
+        self._last_window_filter_stats: Dict[str, int] = {}
         
         # Setup output directory
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -339,9 +343,24 @@ class PolymarketImpactAnalyzer:
             event_ts = int(event_timestamp.timestamp())
         
         window_seconds = window * 60
-        
+        fallback_seconds = self.fallback_window_minutes * 60
+
         # Extract timestamps for binary search
         timestamps = [p.timestamp for p in price_history]
+        min_ts = timestamps[0]
+        max_ts = timestamps[-1]
+
+        # If event is outside available history, report explicitly.
+        if event_ts < min_ts or event_ts > max_ts:
+            return {
+                "price_before": None,
+                "price_after": None,
+                "delta": None,
+                "pct_change": None,
+                "data_quality": "out_of_range",
+                "before_offset_seconds": None,
+                "after_offset_seconds": None
+            }
         
         # Find closest point BEFORE event (within window)
         idx_before = bisect_right(timestamps, event_ts) - 1
@@ -364,6 +383,19 @@ class PolymarketImpactAnalyzer:
             if offset <= window_seconds:
                 price_after = price_history[idx_after].price
                 after_offset = offset
+
+        # Fallback: if strict window misses one side, try wider window.
+        if price_before is None and idx_before >= 0:
+            offset = event_ts - timestamps[idx_before]
+            if offset <= fallback_seconds:
+                price_before = price_history[idx_before].price
+                before_offset = offset
+
+        if price_after is None and idx_after < len(timestamps):
+            offset = timestamps[idx_after] - event_ts
+            if offset <= fallback_seconds:
+                price_after = price_history[idx_after].price
+                after_offset = offset
         
         # Calculate delta
         delta = None
@@ -378,10 +410,12 @@ class PolymarketImpactAnalyzer:
             # Determine quality
             if before_offset <= 60 and after_offset <= 60:
                 data_quality = "exact"
-            else:
+            elif before_offset <= window_seconds and after_offset <= window_seconds:
                 data_quality = "interpolated"
+            else:
+                data_quality = "widened_window"
         elif price_before is not None or price_after is not None:
-            data_quality = "partial"
+            data_quality = "missing"
         
         return {
             "price_before": price_before,
@@ -401,7 +435,8 @@ class PolymarketImpactAnalyzer:
         self,
         graph_path: str,
         slug: str,
-        token_outcome: str = "Yes"
+        token_outcome: str = "Yes",
+        enforce_market_window: bool = True,
     ) -> List[EventImpact]:
         """
         Analyze price impact of all events in a belief graph.
@@ -410,6 +445,8 @@ class PolymarketImpactAnalyzer:
             graph_path: Path to belief graph JSON
             slug: Polymarket event slug
             token_outcome: Which outcome token to analyze ("Yes" or "No")
+            enforce_market_window: If True, only score events within market
+                lifetime inferred from price history.
         
         Returns:
             List of EventImpact measurements
@@ -459,9 +496,21 @@ class PolymarketImpactAnalyzer:
         
         logger.info(f"Step 3: Fetched {len(price_history)} price points")
         
+        # Market lifetime window from available price history.
+        market_start_ts = price_history[0].timestamp
+        market_end_ts = price_history[-1].timestamp
+        market_start_dt = datetime.fromtimestamp(market_start_ts, tz=timezone.utc)
+        market_end_dt = datetime.fromtimestamp(market_end_ts, tz=timezone.utc)
+        logger.info(
+            f"Market window: {market_start_dt.isoformat()} -> {market_end_dt.isoformat()}"
+        )
+        
         # Step 4: Calculate impact for each event node
         logger.info(f"Step 4: Calculating impact for {len(nodes)} events...")
         impacts = []
+        skipped_pre_market = 0
+        skipped_post_market = 0
+        considered_events = 0
         
         for node in nodes:
             event_id = node.get("event_id", "")
@@ -481,6 +530,17 @@ class PolymarketImpactAnalyzer:
             except ValueError as e:
                 logger.warning(f"Invalid timestamp for {event_id}: {timestamp_str}, error: {e}")
                 continue
+            
+            event_ts = int(event_dt.timestamp())
+            if enforce_market_window:
+                if event_ts < market_start_ts:
+                    skipped_pre_market += 1
+                    continue
+                if event_ts > market_end_ts:
+                    skipped_post_market += 1
+                    continue
+            
+            considered_events += 1
             
             # Calculate impact
             impact_data = self.calculate_impact(price_history, event_dt)
@@ -519,6 +579,20 @@ class PolymarketImpactAnalyzer:
         # Sort by timestamp
         impacts.sort(key=lambda x: x.event_timestamp)
         
+        self._last_window_filter_stats = {
+            "graph_nodes_total": len(nodes),
+            "events_considered_in_market_window": considered_events,
+            "events_skipped_pre_market": skipped_pre_market,
+            "events_skipped_post_market": skipped_post_market,
+        }
+        self._log_json("market_window_filter", self._last_window_filter_stats)
+        logger.info(
+            "Step 4 window filter: "
+            f"considered={considered_events}, "
+            f"skipped_pre_market={skipped_pre_market}, "
+            f"skipped_post_market={skipped_post_market}"
+        )
+        
         logger.info(f"Step 4: Calculated impact for {len(impacts)} events")
         
         return impacts
@@ -544,8 +618,9 @@ class PolymarketImpactAnalyzer:
         Returns:
             Timeline dict with impacts and stats
         """
-        # Filter to impacts with data
-        measured = [i for i in impacts if i.data_quality != "missing"]
+        # Filter to impacts where delta was actually computed.
+        measured = [i for i in impacts if i.delta is not None]
+        out_of_range = [i for i in impacts if i.data_quality == "out_of_range"]
         positive = [i for i in measured if i.delta and i.delta > 0]
         negative = [i for i in measured if i.delta and i.delta < 0]
         neutral = [i for i in measured if i.delta is not None and i.delta == 0]
@@ -569,6 +644,7 @@ class PolymarketImpactAnalyzer:
                 "total_events": len(impacts),
                 "events_with_data": len(measured),
                 "events_missing_data": len(impacts) - len(measured),
+                "events_out_of_range": len(out_of_range),
                 "positive_impacts": len(positive),
                 "negative_impacts": len(negative),
                 "neutral_impacts": len(neutral),
@@ -579,6 +655,9 @@ class PolymarketImpactAnalyzer:
             },
             "impacts": [i.to_dict() for i in impacts]
         }
+        
+        if self._last_window_filter_stats:
+            timeline["summary"].update(self._last_window_filter_stats)
         
         if save:
             output_file = self.output_dir / f"{slug}_timeline.json"
@@ -603,6 +682,7 @@ class PolymarketImpactAnalyzer:
         print(f"\n  Window: ±{self.window_minutes} minutes")
         print(f"  Total events: {summary['total_events']}")
         print(f"  Events with data: {summary['events_with_data']}")
+        print(f"  Events out of range: {summary.get('events_out_of_range', 0)}")
         print(f"  Positive impacts: {summary['positive_impacts']}")
         print(f"  Negative impacts: {summary['negative_impacts']}")
         print(f"  Avg |delta|: {summary['avg_abs_delta']:.4f}")
