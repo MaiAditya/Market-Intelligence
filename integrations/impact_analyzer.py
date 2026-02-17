@@ -11,6 +11,7 @@ No ML/LLM. Deterministic. Fully logged.
 import json
 import logging
 import time
+import os
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone, timedelta
@@ -90,7 +91,20 @@ class PolymarketImpactAnalyzer:
         fallback_window_minutes: int = 60,
         fidelity: int = 1,
         output_dir: Optional[Path] = None,
-        timeout: int = 30
+        timeout: int = 30,
+        prefer_orders_history: bool = False,
+        orders_only: bool = False,
+        dome_orders_url: str = "https://api.domeapi.io/v1/polymarket/orders",
+        dome_bearer_token: Optional[str] = None,
+        orders_pages_dir: Optional[Path] = None,
+        orders_history_dir: Optional[Path] = None,
+        orders_api_limit: int = 100,
+        orders_max_pages: int = 30,
+        orders_timeout_sec: int = 30,
+        orders_max_retries: int = 10,
+        orders_backoff_base_sec: float = 2.0,
+        orders_backoff_max_sec: float = 90.0,
+        orders_request_delay_sec: float = 0.35,
     ):
         """
         Args:
@@ -105,6 +119,19 @@ class PolymarketImpactAnalyzer:
         self.fidelity = fidelity
         self.output_dir = Path(output_dir or "data/impact_analysis")
         self.timeout = timeout
+        self.prefer_orders_history = prefer_orders_history
+        self.orders_only = orders_only
+        self.dome_orders_url = dome_orders_url
+        self.dome_bearer_token = dome_bearer_token or os.getenv("DOME_BEARER_TOKEN", "")
+        self.orders_pages_dir = Path(orders_pages_dir or "data/backtests/orders_pages")
+        self.orders_history_dir = Path(orders_history_dir or "data/backtests")
+        self.orders_api_limit = orders_api_limit
+        self.orders_max_pages = orders_max_pages
+        self.orders_timeout_sec = orders_timeout_sec
+        self.orders_max_retries = orders_max_retries
+        self.orders_backoff_base_sec = orders_backoff_base_sec
+        self.orders_backoff_max_sec = orders_backoff_max_sec
+        self.orders_request_delay_sec = orders_request_delay_sec
         
         self._session = requests.Session()
         self._session.headers.update({
@@ -115,12 +142,117 @@ class PolymarketImpactAnalyzer:
         # Cache for price history
         self._price_cache: Dict[str, List[PricePoint]] = {}
         self._last_window_filter_stats: Dict[str, int] = {}
+        self._history_source_by_token: Dict[str, str] = {}
+        self._last_selected_token_meta: Dict[str, object] = {}
         
         # Setup output directory
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.orders_pages_dir.mkdir(parents=True, exist_ok=True)
+        self.orders_history_dir.mkdir(parents=True, exist_ok=True)
         
         # Setup logging
         self._setup_logging()
+
+    def _token_history_path(self, token_id: str) -> Path:
+        return self.orders_history_dir / f"token_history_{token_id}.json"
+
+    def _load_local_history(self, token_id: str) -> List[PricePoint]:
+        candidates: List[Path] = [
+            self._token_history_path(token_id),
+            self.orders_history_dir / f"token_history_{token_id[:10]}.json",
+        ]
+        for path in candidates:
+            if not path.exists():
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+                rows = payload.get("history", []) or []
+                points = [
+                    PricePoint(timestamp=int(r["t"]), price=float(r["p"]))
+                    for r in rows
+                    if "t" in r and "p" in r
+                ]
+                points.sort(key=lambda p: p.timestamp)
+                if points:
+                    self._history_source_by_token[token_id] = "orders_local_cache"
+                    logger.info(
+                        f"Loaded local orders history for token={token_id[:20]}... points={len(points)} file={path}"
+                    )
+                    return points
+            except Exception as e:
+                logger.warning(f"Failed to load local token history {path}: {e}")
+        return []
+
+    def _build_history_from_orders_api(self, token_id: str) -> List[PricePoint]:
+        if not self.dome_bearer_token:
+            logger.warning("DOME_BEARER_TOKEN missing; cannot fetch Dome orders history")
+            return []
+        try:
+            from scripts import build_price_history_from_orders as orders_builder
+        except Exception as e:
+            logger.warning(f"Could not import orders history builder script: {e}")
+            return []
+
+        try:
+            files = orders_builder._fetch_orders_pages(
+                token_id=token_id,
+                api_url=self.dome_orders_url,
+                pages_dir=self.orders_pages_dir,
+                limit=self.orders_api_limit,
+                max_pages=self.orders_max_pages,
+                timeout=self.orders_timeout_sec,
+                pagination_key="",
+                api_key="",
+                api_key_header="x-api-key",
+                auth_bearer=self.dome_bearer_token,
+                extra_headers=[],
+                max_retries=self.orders_max_retries,
+                backoff_base_sec=self.orders_backoff_base_sec,
+                backoff_max_sec=self.orders_backoff_max_sec,
+                request_delay_sec=self.orders_request_delay_sec,
+            )
+            if not files:
+                return []
+
+            raw_orders = orders_builder._load_orders(files, token_id)
+            fills = []
+            for row in raw_orders:
+                f = orders_builder._normalize_fill(row, token_id)
+                if f is not None:
+                    fills.append(f)
+            deduped = orders_builder._dedupe_mirror_fills(fills)
+            bars = orders_builder._build_bars(deduped, interval_sec=60)
+            history_rows = [{"t": b["t"], "p": b["c"]} for b in bars]
+
+            out = {
+                "history": history_rows,
+                "bars": bars,
+                "meta": {
+                    "token_id": token_id,
+                    "raw_orders": len(raw_orders),
+                    "usable_fills": len(fills),
+                    "deduped_fills": len(deduped),
+                    "bars": len(bars),
+                    "generated_by": "PolymarketImpactAnalyzer",
+                    "source": "dome_orders_api",
+                },
+            }
+            out_path = self._token_history_path(token_id)
+            with open(out_path, "w", encoding="utf-8") as f:
+                json.dump(out, f, indent=2)
+            logger.info(f"Saved token history from orders API: {out_path}")
+            self._history_source_by_token[token_id] = "orders_api"
+
+            points = [
+                PricePoint(timestamp=int(r["t"]), price=float(r["p"]))
+                for r in history_rows
+            ]
+            points.sort(key=lambda p: p.timestamp)
+            return points
+        except Exception as e:
+            logger.warning(f"Orders API history build failed for token={token_id[:20]}...: {e}")
+            return []
     
     def _setup_logging(self):
         """Configure structured logging."""
@@ -258,6 +390,27 @@ class PolymarketImpactAnalyzer:
             logger.info(f"Using cached price history for token {token_id[:20]}...")
             return self._price_cache[cache_key]
         
+        # Prefer local/orders-derived history for backtests.
+        if self.prefer_orders_history:
+            points = self._load_local_history(token_id)
+            if not points:
+                points = self._build_history_from_orders_api(token_id)
+            if points:
+                self._price_cache[cache_key] = points
+                self._log_json("price_history_fetched", {
+                    "token_id": token_id[:20] + "...",
+                    "data_points": len(points),
+                    "time_range_start": points[0].dt.isoformat() if points else None,
+                    "time_range_end": points[-1].dt.isoformat() if points else None,
+                    "source": self._history_source_by_token.get(token_id, "orders_api_or_local"),
+                })
+                return points
+            if self.orders_only:
+                logger.warning(
+                    f"orders_only enabled and no orders-based history for token {token_id[:20]}..."
+                )
+                return []
+
         fidelity = fidelity or self.fidelity
         url = f"{self.CLOB_URL}/prices-history"
         params = {
@@ -265,9 +418,9 @@ class PolymarketImpactAnalyzer:
             "interval": interval,
             "fidelity": fidelity
         }
-        
+
         logger.info(f"Fetching price history: token={token_id[:20]}..., interval={interval}, fidelity={fidelity}")
-        
+
         try:
             response = self._session.get(url, params=params, timeout=self.timeout)
             response.raise_for_status()
@@ -275,25 +428,27 @@ class PolymarketImpactAnalyzer:
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to fetch price history for {token_id[:20]}...: {e}")
             return []
-        
+
         history = data.get("history", [])
-        
+
         price_points = [
             PricePoint(timestamp=int(p["t"]), price=float(p["p"]))
             for p in history
         ]
-        
+
         # Sort by timestamp (should already be sorted, but ensure)
         price_points.sort(key=lambda p: p.timestamp)
         
         # Cache it
         self._price_cache[cache_key] = price_points
+        self._history_source_by_token[token_id] = "clob_prices_history"
         
         self._log_json("price_history_fetched", {
             "token_id": token_id[:20] + "...",
             "data_points": len(price_points),
             "time_range_start": price_points[0].dt.isoformat() if price_points else None,
-            "time_range_end": price_points[-1].dt.isoformat() if price_points else None
+            "time_range_end": price_points[-1].dt.isoformat() if price_points else None,
+            "source": "clob_prices_history"
         })
         
         logger.info(f"Fetched {len(price_points)} price points")
@@ -396,6 +551,37 @@ class PolymarketImpactAnalyzer:
             if offset <= fallback_seconds:
                 price_after = price_history[idx_after].price
                 after_offset = offset
+
+        # Adaptive widening if both sides still missing. This helps sparse-order
+        # histories where minute bars are intermittent.
+        if price_before is None and price_after is None:
+            adaptive_windows = [max(window * 5, 10), 30, 60, 120, 360, 720]
+            seen = set()
+            for w in adaptive_windows:
+                if w in seen:
+                    continue
+                seen.add(w)
+                bound = w * 60
+                test_before = None
+                test_before_offset = None
+                if idx_before >= 0:
+                    off = event_ts - timestamps[idx_before]
+                    if off <= bound:
+                        test_before = price_history[idx_before].price
+                        test_before_offset = off
+                test_after = None
+                test_after_offset = None
+                if idx_after < len(timestamps):
+                    off = timestamps[idx_after] - event_ts
+                    if off <= bound:
+                        test_after = price_history[idx_after].price
+                        test_after_offset = off
+                if test_before is not None and test_after is not None:
+                    price_before = test_before
+                    before_offset = test_before_offset
+                    price_after = test_after
+                    after_offset = test_after_offset
+                    break
         
         # Calculate delta
         delta = None
@@ -412,8 +598,10 @@ class PolymarketImpactAnalyzer:
                 data_quality = "exact"
             elif before_offset <= window_seconds and after_offset <= window_seconds:
                 data_quality = "interpolated"
-            else:
+            elif before_offset <= fallback_seconds and after_offset <= fallback_seconds:
                 data_quality = "widened_window"
+            else:
+                data_quality = "adaptive_window"
         elif price_before is not None or price_after is not None:
             data_quality = "missing"
         
@@ -437,6 +625,7 @@ class PolymarketImpactAnalyzer:
         slug: str,
         token_outcome: str = "Yes",
         enforce_market_window: bool = True,
+        skip_out_of_window_events: bool = True,
     ) -> List[EventImpact]:
         """
         Analyze price impact of all events in a belief graph.
@@ -474,27 +663,77 @@ class PolymarketImpactAnalyzer:
             logger.error("No tokens found for slug")
             return []
         
-        # Pick the target outcome token
+        # Build token candidates: preferred outcome first, then all others.
+        preferred = [t for t in tokens if t.outcome.lower() == token_outcome.lower()]
+        others = [t for t in tokens if t.outcome.lower() != token_outcome.lower()]
+        token_candidates = preferred + others
+
+        if not preferred and token_candidates:
+            logger.warning(
+                f"Token for outcome '{token_outcome}' not found, "
+                f"trying all available outcomes"
+            )
+
+        # Pre-parse event timestamps to score token history overlap.
+        event_timestamps: List[int] = []
+        for node in nodes:
+            ts = node.get("timestamp")
+            if not ts:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                event_timestamps.append(int(dt.timestamp()))
+            except Exception:
+                continue
+
+        # Step 3: Fetch price history and select best token by overlap.
         target_token = None
-        for token in tokens:
-            if token.outcome.lower() == token_outcome.lower():
-                target_token = token
-                break
-        
-        if not target_token:
-            # Fallback to first token
-            target_token = tokens[0]
-            logger.warning(f"Token for outcome '{token_outcome}' not found, using {target_token.outcome}")
-        
-        logger.info(f"Step 2: Using token for '{target_token.outcome}' (price: {target_token.current_price})")
-        
-        # Step 3: Fetch price history
-        price_history = self.fetch_price_history(target_token.token_id)
-        if not price_history:
-            logger.error("No price history available")
+        price_history: List[PricePoint] = []
+        best_score: Tuple[int, int, int] = (-1, -1, -1)  # overlap_count, history_points, -candidate_index
+
+        for i, candidate in enumerate(token_candidates, start=1):
+            logger.info(
+                f"Step 3: Trying token {i}/{len(token_candidates)} "
+                f"({candidate.outcome}, price={candidate.current_price})"
+            )
+            history = self.fetch_price_history(candidate.token_id)
+            if not history:
+                continue
+
+            min_ts = history[0].timestamp
+            max_ts = history[-1].timestamp
+            overlap_count = sum(1 for ts in event_timestamps if min_ts <= ts <= max_ts)
+            score = (overlap_count, len(history), -i)
+            logger.info(
+                f"Step 3 token score: token={candidate.token_id[:20]}... "
+                f"overlap={overlap_count}/{len(event_timestamps)} history_points={len(history)}"
+            )
+
+            if score > best_score:
+                best_score = score
+                target_token = candidate
+                price_history = history
+                self._last_selected_token_meta = {
+                    "token_id": candidate.token_id,
+                    "outcome": candidate.outcome,
+                    "history_points": len(history),
+                    "history_source": self._history_source_by_token.get(candidate.token_id, "unknown"),
+                    "overlap_events": overlap_count,
+                    "total_graph_events_with_ts": len(event_timestamps),
+                }
+
+        if target_token is None or not price_history:
+            logger.error(
+                f"No price history available for any token "
+                f"(checked {len(token_candidates)} candidates)"
+            )
             return []
-        
-        logger.info(f"Step 3: Fetched {len(price_history)} price points")
+        logger.info(
+            f"Step 3: Selected token '{target_token.outcome}' with "
+            f"{len(price_history)} price points, overlap={self._last_selected_token_meta.get('overlap_events', 0)}"
+        )
         
         # Market lifetime window from available price history.
         market_start_ts = price_history[0].timestamp
@@ -535,10 +774,12 @@ class PolymarketImpactAnalyzer:
             if enforce_market_window:
                 if event_ts < market_start_ts:
                     skipped_pre_market += 1
-                    continue
+                    if skip_out_of_window_events:
+                        continue
                 if event_ts > market_end_ts:
                     skipped_post_market += 1
-                    continue
+                    if skip_out_of_window_events:
+                        continue
             
             considered_events += 1
             

@@ -42,6 +42,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to load event registry: {e}")
     
+    # Optional startup model preload (recommended for API mode)
+    preload_models = True
+    try:
+        from models.model_manager import get_model_manager
+        manager = get_model_manager()
+        if preload_models:
+            status = manager.preload_all()
+            logger.info(f"Preloaded models on startup: {status}")
+    except Exception as e:
+        logger.warning(f"Model preload skipped/failed: {e}")
+    
     yield
     
     # Shutdown

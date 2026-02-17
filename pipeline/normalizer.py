@@ -467,6 +467,18 @@ class DocumentNormalizer:
             NormalizedDocument
         """
         normalized = self.normalize(ingested_doc)
+
+        # Preserve extracted entities when the canonical text is unchanged.
+        # This avoids re-running expensive NER on repeated pipeline runs.
+        existing = self.load(normalized.doc_id)
+        if existing is not None:
+            same_text = (
+                existing.title == normalized.title and
+                existing.raw_text == normalized.raw_text
+            )
+            if same_text and existing.extracted_entities and not normalized.extracted_entities:
+                normalized.extracted_entities = existing.extracted_entities
+
         self.save(normalized)
         return normalized
     

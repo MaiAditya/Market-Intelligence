@@ -10,6 +10,9 @@
     "dependency_threshold": 0.3
   },
   "cache_dir": "./models/cache",
+  "local_files_only": true,
+  "offline_mode": true,
+  "preload_optional_models": false,
   "max_sequence_length": 512,
   "batch_size": 16
 }

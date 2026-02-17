@@ -34,6 +34,8 @@ from cli.commands import (
 )
 from belief_graph.graph_builder import GraphBuilder
 from belief_graph.storage import get_storage
+from scripts.generate_event_market_report import generate_report
+from models.model_manager import get_model_manager
 
 logger = logging.getLogger(__name__)
 
@@ -383,6 +385,38 @@ def cmd_build_all_graphs(args):
     print(f"\nCompleted: {success} built, {skipped} skipped, {failed} failed")
 
 
+def cmd_market_report(args):
+    """Generate consolidated market report JSON for one event."""
+    logger.info(f"Command: market-report --event {args.event}")
+    report = generate_report(
+        event_id=args.event,
+        slug=args.slug,
+        graph_path=args.graph,
+        output_path=args.output,
+        top_n1=args.top_n1,
+        top_n2=args.top_n2,
+        min_conf=args.min_conf,
+        impact_window=args.impact_window,
+    )
+    print(f"Report generated for {args.event}")
+    print(f"N-1: {report['summary']['n1_count']}, N-2: {report['summary']['n2_count']}")
+    print(f"Price impacts available: {report['summary']['price_impacts_available']}")
+
+
+def cmd_warm_models(args):
+    """Eagerly load models into process memory and verify local cache health."""
+    logger.info("Command: warm-models")
+    manager = get_model_manager()
+    status = manager.preload_all(include_optional=args.include_optional)
+    print("Model preload complete:")
+    for name, ok in status.items():
+        if ok is None:
+            state = "SKIPPED"
+        else:
+            state = "OK" if ok else "FAILED"
+        print(f"  {name}: {state}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="AI Market Intelligence Pipeline CLI",
@@ -615,6 +649,69 @@ Examples:
         help="Maximum events per graph (default: 100)"
     )
     build_all_parser.set_defaults(func=cmd_build_all_graphs)
+
+    # market-report
+    report_parser = subparsers.add_parser(
+        "market-report",
+        help="Generate consolidated market report JSON for one event"
+    )
+    report_parser.add_argument(
+        "--event", "-e",
+        required=True,
+        help="Event ID"
+    )
+    report_parser.add_argument(
+        "--slug",
+        help="Polymarket slug (optional, from registry if omitted)"
+    )
+    report_parser.add_argument(
+        "--graph",
+        help="Path to graph JSON (optional)"
+    )
+    report_parser.add_argument(
+        "--top-n1",
+        type=int,
+        default=15,
+        help="Top N-1 nodes to include (default: 15)"
+    )
+    report_parser.add_argument(
+        "--top-n2",
+        type=int,
+        default=5,
+        help="Top N-2 per N-1 to include (default: 5)"
+    )
+    report_parser.add_argument(
+        "--min-conf",
+        type=float,
+        default=0.3,
+        help="Minimum confidence threshold (default: 0.3)"
+    )
+    report_parser.add_argument(
+        "--impact-window",
+        type=int,
+        default=2,
+        help="Impact window in minutes (default: 2)"
+    )
+    report_parser.add_argument(
+        "-o", "--output",
+        help="Output JSON file path"
+    )
+    report_parser.set_defaults(func=cmd_market_report)
+
+    # warm-models
+    warm_models_parser = subparsers.add_parser(
+        "warm-models",
+        help="Eagerly load all models (useful before long-running API/process)"
+    )
+    warm_models_parser.add_argument(
+        "--include-optional",
+        action="store_true",
+        help=(
+            "Also preload optional classifier backbone models "
+            "(dependency_classifier, signal_classifier)"
+        )
+    )
+    warm_models_parser.set_defaults(func=cmd_warm_models)
     
     args = parser.parse_args()
     

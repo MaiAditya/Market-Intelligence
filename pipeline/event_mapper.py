@@ -430,7 +430,8 @@ class EventMapper:
         self,
         event: Event,
         documents: Optional[List[NormalizedDocument]] = None,
-        min_relevance: Optional[float] = None
+        min_relevance: Optional[float] = None,
+        prefer_saved_mappings: bool = True,
     ) -> List[Tuple[NormalizedDocument, DocumentMapping]]:
         """
         Get documents relevant to an event.
@@ -439,15 +440,40 @@ class EventMapper:
             event: Target event
             documents: Documents to check
             min_relevance: Minimum relevance score
+            prefer_saved_mappings: Reuse saved mapping files when available, and
+                only compute missing mappings.
         
         Returns:
             List of (document, mapping) tuples for relevant documents
         """
-        mappings = self.map_all_documents_to_event(event, documents)
-        
-        # Build doc lookup
         if documents is None:
             documents = self.normalizer.load_all_for_event(event.event_id)
+
+        mappings: List[DocumentMapping] = []
+        if prefer_saved_mappings:
+            missing_docs: List[NormalizedDocument] = []
+            for doc in documents:
+                mapping = self.load_mapping(doc.doc_id)
+                if mapping is not None and mapping.event_id == event.event_id:
+                    mappings.append(mapping)
+                else:
+                    missing_docs.append(doc)
+
+            if missing_docs:
+                logger.info(
+                    f"Found {len(mappings)} cached mappings, computing {len(missing_docs)} missing"
+                )
+                mappings.extend(
+                    self.map_all_documents_to_event_batch(
+                        event,
+                        missing_docs,
+                        save_mappings=True,
+                    )
+                )
+        else:
+            mappings = self.map_all_documents_to_event(event, documents)
+        
+        # Build doc lookup
         doc_lookup = {doc.doc_id: doc for doc in documents}
         
         # Filter relevant
@@ -703,4 +729,3 @@ class EventMapper:
         )
         
         return mappings
-

@@ -317,7 +317,10 @@ class SignalExtractor:
         
         # Get relevant documents with mappings
         logger.info(f"Extracting signals for event: {event_id}")
-        relevant_docs = self.mapper.get_relevant_documents(event)
+        relevant_docs = self.mapper.get_relevant_documents(
+            event,
+            prefer_saved_mappings=True
+        )
         
         if not relevant_docs:
             logger.info(f"No relevant documents for event {event_id}")

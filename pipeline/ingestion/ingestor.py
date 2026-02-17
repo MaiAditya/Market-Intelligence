@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -147,6 +148,7 @@ class DataIngestor:
         self.reddit = RedditClient()
         self.twitter = TwitterScraperSync()
         self.web = WebScraper()
+        self._url_lock = threading.Lock()
         
         # Track already ingested URLs to avoid duplicates
         self._ingested_urls: Set[str] = set()
@@ -163,13 +165,28 @@ class DataIngestor:
             except Exception:
                 pass
     
-    def _save_document(self, doc: IngestedDocument) -> None:
-        """Save ingested document to disk."""
+    def _save_document(self, doc: IngestedDocument) -> bool:
+        """
+        Save ingested document to disk if URL is new.
+
+        Returns:
+            True if saved, False if skipped as duplicate.
+        """
+        with self._url_lock:
+            if doc.url in self._ingested_urls:
+                return False
+            self._ingested_urls.add(doc.url)
+
         from utils.json_utils import dump_json
         doc_path = self.data_dir / f"{doc.doc_id}.json"
-        with open(doc_path, 'w', encoding='utf-8') as f:
-            dump_json(doc.to_dict(), f)
-        self._ingested_urls.add(doc.url)
+        try:
+            with open(doc_path, 'w', encoding='utf-8') as f:
+                dump_json(doc.to_dict(), f)
+        except Exception:
+            with self._url_lock:
+                self._ingested_urls.discard(doc.url)
+            raise
+        return True
     
     def _reddit_post_to_document(
         self,
@@ -301,11 +318,10 @@ class DataIngestor:
                 )
             
             for post in posts:
-                if post.permalink not in self._ingested_urls:
-                    doc = self._reddit_post_to_document(
-                        post, query, query_type, event_id
-                    )
-                    self._save_document(doc)
+                doc = self._reddit_post_to_document(
+                    post, query, query_type, event_id
+                )
+                if self._save_document(doc):
                     documents.append(doc)
             
             logger.info(f"Reddit ingestion for '{query}': {len(documents)} new documents")
@@ -341,11 +357,10 @@ class DataIngestor:
             tweets = self.twitter.search(query, limit=limit)
             
             for tweet in tweets:
-                if tweet.url not in self._ingested_urls:
-                    doc = self._tweet_to_document(
-                        tweet, query, query_type, event_id
-                    )
-                    self._save_document(doc)
+                doc = self._tweet_to_document(
+                    tweet, query, query_type, event_id
+                )
+                if self._save_document(doc):
                     documents.append(doc)
             
             logger.info(f"Twitter ingestion for '{query}': {len(documents)} new documents")
@@ -388,7 +403,8 @@ class DataIngestor:
             logger.info(f"Search for '{query}' found {len(urls)} URLs")
             
             # Filter already ingested URLs
-            urls = [u for u in urls if u not in self._ingested_urls]
+            with self._url_lock:
+                urls = [u for u in urls if u not in self._ingested_urls]
             
             if not urls:
                 logger.info(f"No new URLs to scrape for '{query}'")
@@ -411,9 +427,9 @@ class DataIngestor:
                             doc = self._scraped_page_to_document(
                                 page, query, query_type, event_id
                             )
-                            self._save_document(doc)
-                            documents.append(doc)
-                            logger.debug(f"Scraped: {page.title[:50] if page.title else url}")
+                            if self._save_document(doc):
+                                documents.append(doc)
+                                logger.debug(f"Scraped: {page.title[:50] if page.title else url}")
                     except Exception as e:
                         logger.debug(f"Failed to scrape {url}: {e}")
             
@@ -486,15 +502,35 @@ class DataIngestor:
             All ingested documents for the event
         """
         all_documents = []
+        max_workers = min(self.max_workers, max(1, len(queries)))
         
-        for q in queries:
-            docs = self.ingest_for_query(
-                query=q["query"],
-                query_type=q["query_type"],
-                event_id=event_id,
-                sources=sources
-            )
-            all_documents.extend(docs)
+        if max_workers <= 1:
+            for q in queries:
+                docs = self.ingest_for_query(
+                    query=q["query"],
+                    query_type=q["query_type"],
+                    event_id=event_id,
+                    sources=sources
+                )
+                all_documents.extend(docs)
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [
+                    executor.submit(
+                        self.ingest_for_query,
+                        q["query"],
+                        q["query_type"],
+                        event_id,
+                        sources
+                    )
+                    for q in queries
+                ]
+                for future in as_completed(futures):
+                    try:
+                        docs = future.result()
+                        all_documents.extend(docs)
+                    except Exception as e:
+                        logger.error(f"Query ingestion task failed: {e}")
         
         logger.info(
             f"Event {event_id} ingestion complete: "

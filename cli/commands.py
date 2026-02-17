@@ -152,23 +152,54 @@ class PipelineOrchestrator:
             logger.info(f"[{event.event_id}] Found {len(docs)} existing documents")
         
         # Step 3: Normalize documents
-        logger.info(f"[{event.event_id}] Step 3/6: Normalizing documents...")
-        if verbose:
-            print("  [3/6] Normalizing documents...")
         normalized = []
-        for doc in docs:
-            norm = self.normalizer.normalize_and_save(doc.to_dict())
-            normalized.append(norm)
-        logger.info(f"[{event.event_id}] Normalized {len(normalized)} documents")
-        if verbose:
-            print(f"        Normalized {len(normalized)} documents")
+        if skip_ingestion:
+            normalized = self.normalizer.load_all_for_event(event.event_id)
+            if normalized:
+                logger.info(
+                    f"[{event.event_id}] Step 3/6: Using cached normalized documents "
+                    f"({len(normalized)})"
+                )
+                if verbose:
+                    print("  [3/6] Using cached normalized documents...")
+                    print(f"        Loaded {len(normalized)} cached normalized docs")
+            else:
+                logger.info(f"[{event.event_id}] Step 3/6: No cached normalized docs, normalizing...")
+                if verbose:
+                    print("  [3/6] No cache found, normalizing documents...")
+                for doc in docs:
+                    norm = self.normalizer.normalize_and_save(doc.to_dict())
+                    normalized.append(norm)
+                logger.info(f"[{event.event_id}] Normalized {len(normalized)} documents")
+                if verbose:
+                    print(f"        Normalized {len(normalized)} documents")
+        else:
+            logger.info(f"[{event.event_id}] Step 3/6: Normalizing documents...")
+            if verbose:
+                print("  [3/6] Normalizing documents...")
+            for doc in docs:
+                norm = self.normalizer.normalize_and_save(doc.to_dict())
+                normalized.append(norm)
+            logger.info(f"[{event.event_id}] Normalized {len(normalized)} documents")
+            if verbose:
+                print(f"        Normalized {len(normalized)} documents")
         
         # Step 4: Extract entities
-        logger.info(f"[{event.event_id}] Step 4/6: Extracting entities...")
-        if verbose:
-            print("  [4/6] Extracting entities...")
-        updated_docs = self.entity_extractor.process_event_documents(event.event_id)
-        logger.info(f"[{event.event_id}] Extracted entities from {len(updated_docs)} documents")
+        needs_entity_extraction = any(not doc.extracted_entities for doc in normalized)
+        if skip_ingestion and normalized and not needs_entity_extraction:
+            logger.info(
+                f"[{event.event_id}] Step 4/6: Skipping entity extraction "
+                "(cached entities already present)"
+            )
+            if verbose:
+                print("  [4/6] Skipping entity extraction (cache hit)")
+            updated_docs = []
+        else:
+            logger.info(f"[{event.event_id}] Step 4/6: Extracting entities...")
+            if verbose:
+                print("  [4/6] Extracting entities...")
+            updated_docs = self.entity_extractor.process_event_documents(event.event_id)
+            logger.info(f"[{event.event_id}] Extracted entities from {len(updated_docs)} documents")
         
         # Step 5: Map documents to event
         logger.info(f"[{event.event_id}] Step 5/6: Mapping documents to event...")

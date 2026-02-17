@@ -38,6 +38,8 @@ class ModelManager:
         
         self.config_path = Path(config_path)
         self.config = self._load_config()
+        self.local_files_only = bool(self.config.get("local_files_only", False))
+        self.offline_mode = bool(self.config.get("offline_mode", False))
         
         # Set cache directory
         cache_dir = self.config.get("cache_dir", "./models/cache")
@@ -49,6 +51,10 @@ class ModelManager:
         # Set environment variable for transformers cache
         os.environ["TRANSFORMERS_CACHE"] = str(self.cache_dir)
         os.environ["HF_HOME"] = str(self.cache_dir)
+        
+        if self.offline_mode:
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
         
         # Model cache
         self._models: Dict[str, Any] = {}
@@ -80,11 +86,13 @@ class ModelManager:
             
             tokenizer = AutoTokenizer.from_pretrained(
                 model_name,
-                cache_dir=str(self.cache_dir)
+                cache_dir=str(self.cache_dir),
+                local_files_only=self.local_files_only
             )
             model = AutoModelForTokenClassification.from_pretrained(
                 model_name,
-                cache_dir=str(self.cache_dir)
+                cache_dir=str(self.cache_dir),
+                local_files_only=self.local_files_only
             )
             
             ner_pipeline = pipeline(
@@ -128,7 +136,8 @@ class ModelManager:
             
             model = SentenceTransformer(
                 model_name,
-                cache_folder=str(self.cache_dir)
+                cache_folder=str(self.cache_dir),
+                local_files_only=self.local_files_only
             )
             
             self._models["sentence_transformer"] = model
@@ -168,11 +177,13 @@ class ModelManager:
             
             tokenizer = AutoTokenizer.from_pretrained(
                 model_name,
-                cache_dir=str(self.cache_dir)
+                cache_dir=str(self.cache_dir),
+                local_files_only=self.local_files_only
             )
             model = AutoModel.from_pretrained(
                 model_name,
-                cache_dir=str(self.cache_dir)
+                cache_dir=str(self.cache_dir),
+                local_files_only=self.local_files_only
             )
             
             self._models[model_key] = model
@@ -236,6 +247,44 @@ class ModelManager:
             except ImportError:
                 return False
         return False
+    
+    def preload_all(self, include_optional: Optional[bool] = None) -> Dict[str, Optional[bool]]:
+        """
+        Eagerly load all commonly used models into memory.
+        
+        Useful for long-running processes (API/server mode) so
+        first request is not blocked on model initialization.
+        
+        Args:
+            include_optional: Whether to also load optional classifier backbones
+                (`dependency_classifier`, `signal_classifier`).
+                If None, reads from config key `preload_optional_models` (default False).
+        """
+        if include_optional is None:
+            include_optional = bool(self.config.get("preload_optional_models", False))
+
+        status: Dict[str, Optional[bool]] = {
+            "ner_pipeline": False,
+            "sentence_transformer": False,
+            "dependency_classifier": None,
+            "signal_classifier": None,
+        }
+        
+        ner = self.get_ner_pipeline()
+        status["ner_pipeline"] = ner is not None
+        
+        st = self.get_sentence_transformer()
+        status["sentence_transformer"] = st is not None
+        
+        if include_optional:
+            dep_model, dep_tok = self.get_bert_model("dependency_classifier")
+            status["dependency_classifier"] = dep_model is not None and dep_tok is not None
+            
+            sig_model, sig_tok = self.get_bert_model("signal_classifier")
+            status["signal_classifier"] = sig_model is not None and sig_tok is not None
+        
+        logger.info(f"Model preload status: {status}")
+        return status
 
 
 # Module-level singleton

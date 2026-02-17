@@ -5,7 +5,7 @@ Pydantic models for API request/response validation.
 """
 
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -25,6 +25,85 @@ class AnalyzeAllRequest(BaseModel):
         default=False,
         description="Skip data ingestion"
     )
+
+
+class RunFullPipelineRequest(BaseModel):
+    """Request to run end-to-end processing for one event."""
+    skip_ingestion: bool = Field(
+        default=False,
+        description="Skip ingestion and use existing stored documents"
+    )
+    rebuild_graph: bool = Field(
+        default=False,
+        description="Force belief graph rebuild even if graph exists"
+    )
+    max_events: int = Field(
+        default=120,
+        description="Maximum events for graph builder"
+    )
+    max_edges: int = Field(
+        default=250,
+        description="Maximum edges for graph builder"
+    )
+    market_window_only: bool = Field(
+        default=True,
+        description="Restrict graph nodes to the market active time window"
+    )
+    window_start: Optional[datetime] = Field(
+        default=None,
+        description="Optional explicit graph lower time bound (UTC)"
+    )
+    window_end: Optional[datetime] = Field(
+        default=None,
+        description="Optional explicit graph upper time bound (UTC)"
+    )
+    market_slug: Optional[str] = Field(
+        default=None,
+        description="Override Polymarket slug for impact mapping"
+    )
+    top_n1: int = Field(
+        default=15,
+        description="Top N-1 nodes in focused graph"
+    )
+    top_n2: int = Field(
+        default=5,
+        description="Top N-2 nodes per N-1 node in focused graph"
+    )
+    min_confidence: float = Field(
+        default=0.3,
+        description="Minimum edge confidence for focused graph extraction"
+    )
+    impact_window_minutes: int = Field(
+        default=2,
+        description="Price-impact matching window in minutes"
+    )
+    report_output_path: Optional[str] = Field(
+        default=None,
+        description="Optional output path for consolidated report JSON"
+    )
+
+
+class PipelineStepResult(BaseModel):
+    """One pipeline step execution summary."""
+    name: str
+    status: str
+    duration_sec: float
+    details: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RunFullPipelineResponse(BaseModel):
+    """End-to-end pipeline response for one event."""
+    status: str
+    event_id: str
+    event_title: str
+    polymarket_slug: Optional[str] = None
+    started_at: datetime
+    finished_at: datetime
+    total_duration_sec: float
+    steps: List[PipelineStepResult]
+    analysis: "AnalysisResponse"
+    graph_summary: Dict[str, Any]
+    report: Dict[str, Any]
 
 
 # Response Models
@@ -156,3 +235,6 @@ class ErrorResponse(BaseModel):
     """Error response."""
     error: str
     detail: Optional[str] = None
+
+
+RunFullPipelineResponse.update_forward_refs()

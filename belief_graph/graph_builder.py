@@ -585,11 +585,18 @@ class GraphBuilder:
                     depth=depth
                 )
         
-        # Update certainty with cluster corroboration
-        for i, cluster in enumerate(clustered):
+        # Update certainty with cluster corroboration.
+        # Must be ID-based (not index-based) because market-window filtering
+        # can change event_nodes length/order after clustering.
+        cluster_conf_by_event_id: Dict[str, float] = {}
+        for cluster in clustered:
             if cluster.num_sources > 1:
-                # Boost certainty for corroborated events
-                event_nodes[i].certainty = cluster.cluster_confidence
+                cluster_conf_by_event_id[cluster.canonical_event.event_id] = cluster.cluster_confidence
+
+        for node in event_nodes:
+            boosted_conf = cluster_conf_by_event_id.get(node.event_id)
+            if boosted_conf is not None:
+                node.certainty = boosted_conf
         
         # Limit to max_events
         if len(event_nodes) > max_events:
