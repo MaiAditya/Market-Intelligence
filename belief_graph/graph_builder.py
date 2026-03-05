@@ -561,7 +561,11 @@ class GraphBuilder:
             )
         
         # Step 2b: Cluster similar events to reduce duplicates
-        clustered = self.event_clusterer.cluster_events(raw_event_nodes)
+        # Pass market question to anchor embeddings for better clustering
+        market_question = belief.question if belief else None
+        clustered = self.event_clusterer.cluster_events(
+            raw_event_nodes, market_question=market_question
+        )
         logger.info(f"Clustered into {len(clustered)} unique events")
         
         # Use canonical events from clusters

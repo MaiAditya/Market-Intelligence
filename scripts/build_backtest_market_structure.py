@@ -58,7 +58,12 @@ def fetch_event_detail(session: requests.Session, slug: str, timeout: int) -> Op
         return None
 
 
-def extract_child_markets(event_detail: Dict[str, Any], parent_slug: str) -> List[Dict[str, Any]]:
+def extract_child_markets(
+    event_detail: Dict[str, Any],
+    parent_slug: str,
+    parent_start_date: Optional[str] = None,
+    parent_end_date: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     markets = event_detail.get("markets", []) or []
     children: List[Dict[str, Any]] = []
 
@@ -72,7 +77,8 @@ def extract_child_markets(event_detail: Dict[str, Any], parent_slug: str) -> Lis
             "question": m.get("question") or event_detail.get("title") or "",
             "volume": _to_float(m.get("volume"), 0.0),
             "liquidity": _to_float(m.get("liquidity"), 0.0),
-            "end_date": m.get("endDate") or event_detail.get("endDate"),
+            "start_date": m.get("startDate") or m.get("createdAt") or event_detail.get("startDate") or parent_start_date,
+            "end_date": m.get("endDate") or event_detail.get("endDate") or parent_end_date,
             "active": m.get("active"),
             "closed": m.get("closed"),
             "tokens": [],
@@ -222,7 +228,12 @@ def main() -> None:
             )
             continue
 
-        children = extract_child_markets(detail, slug)
+        children = extract_child_markets(
+            detail,
+            slug,
+            parent_start_date=parent.get("start_date"),
+            parent_end_date=parent.get("end_date"),
+        )
         child_count = len(children)
         market_type = "single_binary" if child_count <= 1 else "multi_binary_parent"
 
@@ -242,6 +253,7 @@ def main() -> None:
                 "question": child["question"],
                 "volume": child["volume"],
                 "liquidity": child["liquidity"],
+                "start_date": child["start_date"],
                 "end_date": child["end_date"],
                 "selected_token": token_info["selected_token"],
                 "any_history_available": token_info["any_history_available"],
@@ -260,6 +272,8 @@ def main() -> None:
             "selected_children_count": len(selected_children_out),
             "parent_volume": _to_float(parent.get("volume"), 0.0),
             "parent_liquidity": _to_float(parent.get("liquidity"), 0.0),
+            "parent_start_date": parent.get("start_date"),
+            "parent_end_date": parent.get("end_date"),
             "selected_children": selected_children_out,
             "status": "ok",
         }
@@ -273,7 +287,12 @@ def main() -> None:
                     "child_market_slug": c["market_slug"],
                     "child_question": c["question"],
                     "child_volume": c["volume"],
+                    "parent_start_date": parent.get("start_date"),
+                    "parent_end_date": parent.get("end_date"),
+                    "start_date": c.get("start_date"),
+                    "end_date": c.get("end_date"),
                     "selected_token": c["selected_token"],
+                    "token_checks": c.get("token_checks", []),
                     "any_history_available": c["any_history_available"],
                 }
             )

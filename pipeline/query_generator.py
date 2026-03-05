@@ -7,6 +7,7 @@ No ML involved - pure deterministic string templating.
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -73,8 +74,12 @@ class QueryGenerator:
             templates_path: Path to query_templates.json. Uses default if None.
         """
         if templates_path is None:
-            project_root = Path(__file__).parent.parent
-            templates_path = project_root / "config" / "query_templates.json"
+            config_dir = os.environ.get("AI_PIPELINE_CONFIG_DIR")
+            if config_dir:
+                templates_path = Path(config_dir) / "config" / "query_templates.json"
+            else:
+                project_root = Path(__file__).parent.parent
+                templates_path = project_root / "config" / "query_templates.json"
         
         self.templates_path = Path(templates_path)
         self.templates: Dict = {}

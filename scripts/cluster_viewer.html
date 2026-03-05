@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Market Intelligence — Graph Viewer</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0e14; --surface: #131920; --surface2: #1a2029; --border: #2a3140;
+    --text: #e6edf3; --dim: #6e7a8a; --accent: #58a6ff; --accent2: #1f6feb;
+    --green: #3fb950; --red: #f85149; --orange: #d29922; --purple: #bc8cff; --cyan: #39d2c0;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
+
+  /* App layout */
+  .app { display: flex; flex-direction: column; height: 100vh; }
+  .top-bar { padding: 10px 20px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
+  .top-bar h1 { font-size: 15px; font-weight: 600; white-space: nowrap; }
+  .top-bar .market-info { font-size: 12px; color: var(--dim); margin-left: auto; text-align: right; }
+  .main { display: flex; flex: 1; min-height: 0; }
+  .canvas { flex: 1; position: relative; overflow: hidden; }
+  .panel { width: 360px; flex-shrink: 0; background: var(--surface); border-left: 1px solid var(--border); overflow-y: auto; }
+  .panel-inner { padding: 14px; }
+  .bottom { height: 180px; flex-shrink: 0; background: var(--surface); border-top: 1px solid var(--border); }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 0; }
+  .tab { font-size: 12px; padding: 8px 16px; cursor: pointer; border-bottom: 2px solid transparent; color: var(--dim); transition: all .15s; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  /* Dropzone */
+  .dropzone { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 16px; }
+  .drop-card { padding: 12px 20px; border: 1px dashed var(--border); border-radius: 8px; cursor: pointer; font-size: 13px; transition: .2s; text-align: center; }
+  .drop-card:hover { border-color: var(--accent); color: var(--accent); }
+  .drop-card input { display: none; }
+  .drop-hint { font-size: 11px; color: var(--dim); max-width: 500px; text-align: center; }
+
+  /* Sidebar items */
+  .section-title { font-size: 12px; font-weight: 600; color: var(--accent); margin: 14px 0 6px; text-transform: uppercase; letter-spacing: .5px; }
+  .section-title:first-child { margin-top: 0; }
+  .stat { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; }
+  .stat .k { color: var(--dim); }
+  .stat .v { font-weight: 500; }
+  .card { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-bottom: 6px; cursor: pointer; transition: .15s; }
+  .card:hover { border-color: var(--accent); }
+  .card.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .card-title { font-size: 12px; font-weight: 500; line-height: 1.4; margin-bottom: 4px; }
+  .card-meta { font-size: 10px; color: var(--dim); display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .badge { font-size: 9px; padding: 1px 6px; border-radius: 10px; font-weight: 600; }
+  .b-blue { background: rgba(88,166,255,.12); color: var(--accent); }
+  .b-green { background: rgba(63,185,80,.12); color: var(--green); }
+  .b-red { background: rgba(248,81,73,.12); color: var(--red); }
+  .b-gray { background: rgba(110,122,138,.12); color: var(--dim); }
+  .b-purple { background: rgba(188,140,255,.12); color: var(--purple); }
+  .b-orange { background: rgba(210,153,34,.12); color: var(--orange); }
+
+  /* Detail */
+  .detail-box { background: var(--bg); border-radius: 6px; padding: 10px; margin: 8px 0; }
+  .price-big { font-size: 22px; font-weight: 700; text-align: center; padding: 6px; }
+  .price-big.pos { color: var(--green); }
+  .price-big.neg { color: var(--red); }
+  .price-big.neut { color: var(--dim); }
+  .member { font-size: 11px; padding: 4px 0; border-bottom: 1px solid var(--border); }
+  .member .sub { font-size: 10px; color: var(--dim); }
+
+  /* Edge detail */
+  .edge-card { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-bottom: 6px; }
+  .edge-card .mechanism { font-size: 11px; font-weight: 600; color: var(--cyan); }
+  .edge-card .direction { font-size: 10px; }
+
+  /* SVG */
+  svg { display: block; }
+  .tooltip { position: absolute; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; font-size: 11px; pointer-events: none; z-index: 100; max-width: 300px; box-shadow: 0 4px 16px rgba(0,0,0,.5); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="top-bar">
+    <h1>🧠 AI Market Intelligence</h1>
+    <div class="tabs" id="tabs">
+      <div class="tab active" data-tab="clusters">Event Clusters</div>
+      <div class="tab" data-tab="causal">Causal Graph</div>
+    </div>
+    <div class="market-info" id="marketInfo"></div>
+  </div>
+  <div class="main">
+    <div class="canvas" id="canvas"></div>
+    <div class="panel" id="panel"><div class="panel-inner" id="panelInner"></div></div>
+  </div>
+  <div class="bottom" id="bottom"></div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const COLORS = d3.schemeTableau10;
+const MECH_COLORS = { signaling:'#58a6ff', causal:'#3fb950', legal_constraint:'#d29922', market_microstructure:'#bc8cff', correlation:'#39d2c0', default:'#6e7a8a' };
+const DIR_LABELS = { positive:'↑ Positive', negative:'↓ Negative', ambiguous:'↔ Ambiguous' };
+
+let clusterData = null, graphData = null, priceHistory = [], activeTab = 'clusters', selection = null;
+
+/* ── FILE LOADING ── */
+function showDropzone() {
+  const c = $('#canvas');
+  c.innerHTML = `<div class="dropzone">
+    <div style="font-size:14px;margin-bottom:8px;">Load data files</div>
+    <label class="drop-card">📊 Clustering JSON (with prices)
+      <input type="file" accept=".json" id="fCluster"></label>
+    <label class="drop-card">🔗 Belief Graph JSON
+      <input type="file" accept=".json" id="fGraph"></label>
+    <div class="drop-hint">
+      <b>Step 1:</b> <code>conda activate marketai && python scripts/clustering_diagnostics.py gemini-3pt5-release-2026</code><br>
+      <b>Step 2:</b> <code>python scripts/fetch_cluster_prices.py --slug gemini-3pt5-released-by-june-30</code><br>
+      <b>Step 3:</b> Load the <code>*_with_prices.json</code> file above<br>
+      <b>Step 4:</b> Load the belief graph from <code>data/belief_graphs/gemini-3pt5-release-2026_graph.json</code>
+    </div>
+  </div>`;
+  $('#fCluster').onchange = e => loadFile(e, 'cluster');
+  $('#fGraph').onchange = e => loadFile(e, 'graph');
+  renderPanel();
+}
+
+function loadFile(e, type) {
+  const f = e.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = ev => {
+    const d = JSON.parse(ev.target.result);
+    if (type === 'cluster') {
+      clusterData = d;
+      priceHistory = d.price_history_raw || [];
+    } else {
+      graphData = d;
+    }
+    refresh();
+  };
+  r.readAsText(f);
+}
+
+function refresh() {
+  updateHeader();
+  renderTab();
+  renderPanel();
+  renderTimeline();
+}
+
+/* ── TABS ── */
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  t.classList.add('active');
+  activeTab = t.dataset.tab;
+  selection = null;
+  refresh();
+});
+
+function updateHeader() {
+  const mi = $('#marketInfo');
+  const pm = clusterData?.meta?.polymarket;
+  if (pm) {
+    mi.innerHTML = `${pm.sub_market || pm.event_title} &nbsp; <b style="color:var(--accent)">${(pm.current_price*100).toFixed(1)}% YES</b> &nbsp; Vol: $${(pm.volume||0).toLocaleString()}`;
+  } else if (graphData?.belief) {
+    mi.textContent = graphData.belief.question || '';
+  }
+}
+
+/* ── RENDER TAB ── */
+function renderTab() {
+  if (activeTab === 'clusters') renderClusters();
+  else renderCausal();
+}
+
+/* ══════════ CLUSTER VIEW ══════════ */
+function getClusters() {
+  return clusterData?.clusters_with_prices || clusterData?.steps?.['9_final_clusters']?.clusters || [];
+}
+function getRawEvents() { return clusterData?.steps?.['1_raw_events']?.events || []; }
+
+function renderClusters() {
+  const clusters = getClusters();
+  if (!clusters.length) { showDropzone(); return; }
+  const canvas = $('#canvas');
+  canvas.innerHTML = '<svg id="svg"></svg>';
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  const svg = d3.select('#svg').attr('width', W).attr('height', H);
+  const g = svg.append('g');
+  svg.call(d3.zoom().scaleExtent([.2,5]).on('zoom', e => g.attr('transform', e.transform)));
+
+  const simPairs = clusterData?.steps?.['4_semantic_similarity']?.top_30_pairs || [];
+  const rawEvts = getRawEvents();
+  const threshold = 0.70;
+
+  // Nodes
+  const nodes = clusters.map((c,i) => ({
+    id: i, c, label: (c.canonical_event?.raw_title||'?').substring(0,28),
+    r: 8 + Math.sqrt(c.num_sources||1)*6, color: COLORS[i%10]
+  }));
+
+  // Edges
+  const evtToCluster = {};
+  clusters.forEach((c,ci) => (c.member_event_ids||[]).forEach(eid => evtToCluster[eid]=ci));
+  const idxToCluster = {};
+  rawEvts.forEach((re,ri) => { if(re.event_id in evtToCluster) idxToCluster[ri]=evtToCluster[re.event_id]; });
+  const em = {};
+  simPairs.forEach(p => {
+    const ci=idxToCluster[p.i], cj=idxToCluster[p.j];
+    if(ci!==undefined&&cj!==undefined&&ci!==cj&&p.similarity>=threshold){
+      const k = ci<cj?`${ci}-${cj}`:`${cj}-${ci}`;
+      if(!em[k]||em[k].sim<p.similarity) em[k]={source:Math.min(ci,cj),target:Math.max(ci,cj),sim:p.similarity};
+    }
+  });
+  const links = Object.values(em);
+
+  const sim = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(links).id(d=>d.id).distance(d=>160*(1-d.sim)))
+    .force('charge', d3.forceManyBody().strength(-150))
+    .force('center', d3.forceCenter(W/2, H/2))
+    .force('collision', d3.forceCollide().radius(d=>d.r+6));
+
+  g.selectAll('.link').data(links).enter().append('line')
+    .attr('stroke','var(--border)').attr('stroke-opacity',d=>.2+d.sim*.5).attr('stroke-width',d=>1+d.sim*3);
+
+  const node = g.selectAll('.node').data(nodes).enter().append('g')
+    .call(d3.drag().on('start',(e,d)=>{if(!e.active)sim.alphaTarget(.3).restart();d.fx=d.x;d.fy=d.y;})
+      .on('drag',(e,d)=>{d.fx=e.x;d.fy=e.y;}).on('end',(e,d)=>{if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;}));
+
+  node.append('circle').attr('r',d=>d.r).attr('fill',d=>d.color).attr('fill-opacity',.8)
+    .attr('stroke',d=>selection===d.id?'#fff':d.color).attr('stroke-width',d=>selection===d.id?3:1.5)
+    .attr('cursor','pointer').on('click',(_,d)=>{selection=d.id;renderPanel();renderClusters();});
+
+  node.filter(d=>d.c.num_sources>1).append('text')
+    .attr('dy',4).attr('text-anchor','middle').attr('font-size','9px').attr('fill','#fff').attr('font-weight','700')
+    .text(d=>d.c.num_sources);
+
+  node.append('text').attr('dy',d=>d.r+13).attr('text-anchor','middle')
+    .attr('font-size','9px').attr('fill','var(--dim)').text(d=>d.label);
+
+  sim.on('tick',()=>{
+    g.selectAll('line').attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
+    node.attr('transform',d=>`translate(${d.x},${d.y})`);
+  });
+}
+
+/* ══════════ CAUSAL GRAPH VIEW ══════════ */
+function renderCausal() {
+  if (!graphData) { showDropzone(); return; }
+  const canvas = $('#canvas');
+  canvas.innerHTML = '<svg id="svg"></svg>';
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  const svg = d3.select('#svg').attr('width', W).attr('height', H);
+  const defs = svg.append('defs');
+
+  // Arrow markers
+  ['positive','negative','ambiguous','default'].forEach(dir => {
+    const color = dir==='positive'?'var(--green)':dir==='negative'?'var(--red)':'var(--dim)';
+    defs.append('marker').attr('id',`arrow-${dir}`).attr('viewBox','0 -5 10 10')
+      .attr('refX',20).attr('refY',0).attr('markerWidth',8).attr('markerHeight',8).attr('orient','auto')
+      .append('path').attr('d','M0,-5L10,0L0,5').attr('fill',color);
+  });
+
+  const g = svg.append('g');
+  svg.call(d3.zoom().scaleExtent([.2,5]).on('zoom', e => g.attr('transform', e.transform)));
+
+  const belief = graphData.belief || {};
+  const gNodes = graphData.nodes || [];
+  const gEdges = graphData.edges || [];
+
+  // Build node list: events + belief node
+  const nodeMap = {};
+  const nodes = [];
+  gNodes.forEach((n,i) => {
+    const nd = { id: n.event_id, type: 'event', data: n, label: (n.raw_title || n.action || '?').substring(0,30),
+      r: 10 + (n.certainty||0) * 8, color: MECH_COLORS.default };
+    nodes.push(nd); nodeMap[n.event_id] = nd;
+  });
+  // Belief node (center)
+  const beliefNode = { id: belief.belief_id, type: 'belief', data: belief,
+    label: (belief.question||'?').substring(0,30), r: 22, color: 'var(--accent)' };
+  nodes.push(beliefNode); nodeMap[belief.belief_id] = beliefNode;
+
+  // Links
+  const links = gEdges.map(e => ({
+    source: e.from_event_id, target: e.to_event_id,
+    mechanism: e.mechanism_type, direction: e.direction, confidence: e.confidence,
+    data: e
+  })).filter(l => nodeMap[l.source] && nodeMap[l.target]);
+
+  const sim = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(links).id(d=>d.id).distance(120))
+    .force('charge', d3.forceManyBody().strength(-250))
+    .force('center', d3.forceCenter(W/2, H/2))
+    .force('collision', d3.forceCollide().radius(d=>d.r+10));
+
+  // Edges
+  const link = g.selectAll('.edge').data(links).enter().append('line')
+    .attr('stroke', d => d.direction==='positive'?'var(--green)':d.direction==='negative'?'var(--red)':'var(--dim)')
+    .attr('stroke-width', d => 1 + (d.confidence||0)*3)
+    .attr('stroke-opacity', .7)
+    .attr('marker-end', d => `url(#arrow-${d.direction||'default'})`)
+    .attr('cursor','pointer')
+    .on('click',(_,d)=>{selection={type:'edge',data:d};renderPanel();});
+
+  // Edge labels
+  const edgeLabel = g.selectAll('.elabel').data(links).enter().append('text')
+    .attr('font-size','8px').attr('fill','var(--dim)').attr('text-anchor','middle')
+    .text(d => d.mechanism);
+
+  // Nodes
+  const node = g.selectAll('.node').data(nodes).enter().append('g')
+    .call(d3.drag().on('start',(e,d)=>{if(!e.active)sim.alphaTarget(.3).restart();d.fx=d.x;d.fy=d.y;})
+      .on('drag',(e,d)=>{d.fx=e.x;d.fy=e.y;}).on('end',(e,d)=>{if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;}));
+
+  node.append('circle')
+    .attr('r',d=>d.r)
+    .attr('fill',d=>d.type==='belief'?'var(--accent)':MECH_COLORS[d.data?.event_type]||MECH_COLORS.default)
+    .attr('fill-opacity',.85)
+    .attr('stroke',d=>d.type==='belief'?'var(--accent)':'var(--border)')
+    .attr('stroke-width',d=>d.type==='belief'?3:1.5)
+    .attr('cursor','pointer')
+    .on('click',(_,d)=>{selection={type:d.type==='belief'?'belief':'causal_node',data:d};renderPanel();});
+
+  // Belief node icon
+  node.filter(d=>d.type==='belief').append('text')
+    .attr('dy',5).attr('text-anchor','middle').attr('font-size','14px').text('🎯');
+
+  node.append('text').attr('dy',d=>d.r+13).attr('text-anchor','middle')
+    .attr('font-size','9px').attr('fill','var(--dim)').text(d=>d.label);
+
+  sim.on('tick',()=>{
+    link.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
+    edgeLabel.attr('x',d=>(d.source.x+d.target.x)/2).attr('y',d=>(d.source.y+d.target.y)/2-6);
+    node.attr('transform',d=>`translate(${d.x},${d.y})`);
+  });
+}
+
+/* ══════════ PANEL ══════════ */
+function renderPanel() {
+  const p = $('#panelInner');
+  if (activeTab === 'clusters') renderClusterPanel(p);
+  else renderCausalPanel(p);
+}
+
+function renderClusterPanel(p) {
+  const clusters = getClusters();
+  let h = '<div class="section-title">Overview</div>';
+  const total = clusterData?.steps?.['1_raw_events']?.count || '?';
+  const wp = clusters.filter(c=>c.price_impact?.price_data==='available').length;
+  h += `<div class="stat"><span class="k">Raw events</span><span class="v">${total}</span></div>`;
+  h += `<div class="stat"><span class="k">Clusters</span><span class="v">${clusters.length}</span></div>`;
+  h += `<div class="stat"><span class="k">With price data</span><span class="v">${wp}</span></div>`;
+
+  h += '<div class="section-title">Clusters</div>';
+  clusters.forEach((c,i) => {
+    const cn = c.canonical_event||{};
+    const pi = c.price_impact||{};
+    const sel = selection===i?' sel':'';
+    let pb = '';
+    if(pi.price_data==='available'){
+      const d=pi.delta; const cls=d>.001?'b-green':d<-.001?'b-red':'b-gray';
+      pb=`<span class="badge ${cls}">Δ${d>0?'+':''}${d.toFixed(4)}</span>`;
+    } else {
+      const st = pi.price_data || c.price_data || '';
+      if(st) pb=`<span class="badge b-gray">${st}</span>`;
+    }
+    h += `<div class="card${sel}" onclick="selection=${i};renderPanel();renderClusters();">
+      <div class="card-title"><span style="color:${COLORS[i%10]}">●</span> ${esc(((cn.raw_title||'?')+'').substring(0,70))}</div>
+      <div class="card-meta"><span class="badge b-blue">${c.num_sources}src</span><span class="badge b-gray">sim=${(c.avg_similarity||0).toFixed(2)}</span>${pb}</div>
+    </div>`;
+  });
+
+  // Detail for selected cluster
+  if(selection!==null && typeof selection==='number') {
+    const c = clusters[selection]; if(!c){p.innerHTML=h;return;}
+    const cn=c.canonical_event||{};const pi=c.price_impact||{};
+    h += `<div class="section-title" style="color:${COLORS[selection%10]}">Detail</div>`;
+    h += `<div class="stat"><span class="k">Title</span></div><div style="font-size:11px;padding:2px 0 6px;">${esc(cn.raw_title||'?')}</div>`;
+    h += `<div class="stat"><span class="k">Timestamp</span><span class="v">${cn.timestamp||'?'}</span></div>`;
+    h += `<div class="stat"><span class="k">Certainty</span><span class="v">${(cn.certainty||0).toFixed(3)}</span></div>`;
+    h += `<div class="stat"><span class="k">Actors</span><span class="v">${(c.all_actors||[]).slice(0,5).join(', ')}</span></div>`;
+    if(pi.price_data==='available'){
+      const d=pi.delta||0; const cls=d>.001?'pos':d<-.001?'neg':'neut';
+      h += `<div class="detail-box">
+        <div style="font-size:10px;color:var(--dim)">Price Impact (±${pi.window_minutes||120}min)</div>
+        <div class="price-big ${cls}">${d>0?'+':''}${(d*100).toFixed(2)}pp (${pi.pct_change>0?'+':''}${pi.pct_change||0}%)</div>
+        <div class="stat"><span class="k">Before</span><span class="v">${(pi.price_before*100).toFixed(1)}%</span></div>
+        <div class="stat"><span class="k">At event</span><span class="v">${pi.price_at_event?(pi.price_at_event*100).toFixed(1)+'%':'?'}</span></div>
+        <div class="stat"><span class="k">After</span><span class="v">${(pi.price_after*100).toFixed(1)}%</span></div>
+      </div>`;
+    }
+    if(c.member_event_ids&&c.member_event_ids.length>1){
+      h += '<div class="section-title">Members</div>';
+      const raws=getRawEvents();
+      c.member_event_ids.forEach(mid=>{
+        const re=raws.find(e=>e.event_id===mid);
+        if(re) h+=`<div class="member">${esc(((re.raw_title||'?')+'').substring(0,65))}<br><span class="sub">${re.timestamp||'?'}</span></div>`;
+      });
+    }
+  }
+  p.innerHTML = h;
+}
+
+function renderCausalPanel(p) {
+  if(!graphData){p.innerHTML='<div class="section-title">Load a belief graph JSON</div>';return;}
+  const belief=graphData.belief||{};const gNodes=graphData.nodes||[];const gEdges=graphData.edges||[];
+  let h='<div class="section-title">Belief</div>';
+  h += `<div class="detail-box">
+    <div style="font-size:13px;font-weight:600;">${esc(belief.question||'?')}</div>
+    <div class="stat"><span class="k">Current price</span><span class="v">${belief.current_price?(belief.current_price*100).toFixed(1)+'%':'?'}</span></div>
+    <div class="stat"><span class="k">Resolution</span><span class="v">${belief.resolution_time||'?'}</span></div>
+    <div class="stat"><span class="k">Slug</span><span class="v">${belief.polymarket_slug||'?'}</span></div>
+  </div>`;
+
+  h += `<div class="section-title">Events (${gNodes.length})</div>`;
+  gNodes.forEach((n,i) => {
+    const dirEdge = gEdges.find(e=>e.from_event_id===n.event_id);
+    const dir = dirEdge?.direction||'?';
+    const mech = dirEdge?.mechanism_type||'?';
+    const dCls = dir==='positive'?'b-green':dir==='negative'?'b-red':'b-gray';
+    h += `<div class="card" onclick="selection={type:'causal_node',id:'${n.event_id}'};renderPanel();">
+      <div class="card-title">${esc(((n.raw_title||n.action||'?')+'').substring(0,70))}</div>
+      <div class="card-meta">
+        <span class="badge b-purple">${n.event_type}</span>
+        <span class="badge ${dCls}">${dir}</span>
+        <span class="badge b-orange">${mech}</span>
+        <span class="badge b-gray">conf=${(dirEdge?.confidence||0).toFixed(2)}</span>
+      </div>
+    </div>`;
+  });
+
+  h += `<div class="section-title">Edges (${gEdges.length})</div>`;
+  gEdges.forEach(e => {
+    const color = e.direction==='positive'?'var(--green)':e.direction==='negative'?'var(--red)':'var(--dim)';
+    h += `<div class="edge-card">
+      <div class="mechanism">${e.mechanism_type}</div>
+      <div class="direction" style="color:${color}">${DIR_LABELS[e.direction]||e.direction} · conf=${(e.confidence||0).toFixed(3)}</div>
+      <div style="font-size:10px;color:var(--dim);margin-top:3px;">${esc(e.from_event_id)} → ${esc(e.to_event_id)}</div>
+    </div>`;
+  });
+
+  // Detail for selected causal node
+  if(selection?.type==='causal_node'){
+    const nid = selection.id || selection.data?.id;
+    const n = gNodes.find(x=>x.event_id===nid);
+    if(n){
+      h += '<div class="section-title" style="color:var(--cyan)">Event Detail</div>';
+      h += `<div class="stat"><span class="k">Title</span></div><div style="font-size:11px;padding:2px 0 6px;">${esc(n.raw_title||n.action||'?')}</div>`;
+      h += `<div class="stat"><span class="k">Timestamp</span><span class="v">${n.timestamp||'?'}</span></div>`;
+      h += `<div class="stat"><span class="k">Actors</span><span class="v">${(n.actors||[]).join(', ')}</span></div>`;
+      h += `<div class="stat"><span class="k">Certainty</span><span class="v">${(n.certainty||0).toFixed(3)}</span></div>`;
+      h += `<div class="stat"><span class="k">Source</span><span class="v">${n.source||'?'}</span></div>`;
+      h += `<div class="stat"><span class="k">Scope</span><span class="v">${n.scope||'?'}</span></div>`;
+    }
+  }
+
+  p.innerHTML = h;
+}
+
+/* ══════════ TIMELINE ══════════ */
+function renderTimeline() {
+  const el = $('#bottom');
+  el.innerHTML = '';
+  const W = el.clientWidth - 50, H = 160;
+  if(W < 100) return;
+
+  let allTimes = [];
+  const clusters = getClusters();
+  const gNodes = graphData?.nodes || [];
+
+  clusters.forEach(c => { if(c.canonical_event?.timestamp) allTimes.push(new Date(c.canonical_event.timestamp).getTime()); });
+  gNodes.forEach(n => { if(n.timestamp) allTimes.push(new Date(n.timestamp).getTime()); });
+  if(priceHistory.length) { allTimes.push(priceHistory[0].t*1000, priceHistory[priceHistory.length-1].t*1000); }
+  if(!allTimes.length) { el.innerHTML='<div style="padding:20px;text-align:center;color:var(--dim);font-size:12px">No timeline data</div>'; return; }
+
+  const svg = d3.select(el).append('svg').attr('width',W+50).attr('height',H);
+  const g = svg.append('g').attr('transform','translate(45,10)');
+  const h = H - 40;
+  const x = d3.scaleTime().domain([d3.min(allTimes), d3.max(allTimes)]).range([0,W]);
+
+  // Price line
+  if(priceHistory.length) {
+    const ext = d3.extent(priceHistory, d=>d.p);
+    const y = d3.scaleLinear().domain([ext[0]*.92, ext[1]*1.05]).range([h,0]);
+    g.append('path').datum(priceHistory)
+      .attr('d',d3.area().x(d=>x(d.t*1000)).y0(h).y1(d=>y(d.p)).curve(d3.curveMonotoneX))
+      .attr('fill','var(--accent)').attr('opacity',.06);
+    g.append('path').datum(priceHistory)
+      .attr('d',d3.line().x(d=>x(d.t*1000)).y(d=>y(d.p)).curve(d3.curveMonotoneX))
+      .attr('fill','none').attr('stroke','var(--accent)').attr('stroke-width',1.5).attr('opacity',.7);
+    g.append('g').call(d3.axisLeft(y).ticks(4).tickFormat(d=>(d*100).toFixed(0)+'%'))
+      .selectAll('text').attr('fill','var(--dim)').attr('font-size','9px');
+    g.selectAll('.domain,.tick line').attr('stroke','var(--border)');
+  }
+
+  // X axis
+  const xa = g.append('g').attr('transform',`translate(0,${h})`).call(d3.axisBottom(x).ticks(8).tickFormat(d3.timeFormat('%b %d')));
+  xa.selectAll('text').attr('fill','var(--dim)').attr('font-size','9px');
+  xa.selectAll('.domain,.tick line').attr('stroke','var(--border)');
+
+  // Cluster event markers
+  clusters.forEach((c,i)=>{
+    const ts=c.canonical_event?.timestamp; if(!ts)return;
+    const tx=x(new Date(ts).getTime()); if(tx<0||tx>W)return;
+    g.append('line').attr('x1',tx).attr('x2',tx).attr('y1',0).attr('y2',h)
+      .attr('stroke',COLORS[i%10]).attr('stroke-width',1).attr('stroke-dasharray','3,2').attr('opacity',.5);
+    g.append('circle').attr('cx',tx).attr('cy',h).attr('r',3).attr('fill',COLORS[i%10]).attr('cursor','pointer')
+      .on('click',()=>{activeTab='clusters';document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab==='clusters'));selection=i;refresh();});
+    const pi=c.price_impact||{};
+    if(pi.price_data==='available'&&pi.delta!==null){
+      const d=pi.delta; const col=d>.001?'var(--green)':d<-.001?'var(--red)':'var(--dim)';
+      g.append('text').attr('x',tx).attr('y',-2).attr('text-anchor','middle')
+        .attr('font-size','7px').attr('fill',col).attr('font-weight','600')
+        .text(`${d>0?'+':''}${(d*100).toFixed(1)}pp`);
+    }
+  });
+
+  // Causal graph event markers (triangles)
+  gNodes.forEach((n,i)=>{
+    if(!n.timestamp) return;
+    const tx = x(new Date(n.timestamp).getTime()); if(tx<0||tx>W)return;
+    const edge = (graphData?.edges||[]).find(e=>e.from_event_id===n.event_id);
+    const dir = edge?.direction;
+    const col = dir==='positive'?'var(--green)':dir==='negative'?'var(--red)':'var(--dim)';
+    g.append('polygon').attr('points',`${tx},${h-8} ${tx-4},${h} ${tx+4},${h}`)
+      .attr('fill',col).attr('opacity',.8).attr('cursor','pointer')
+      .on('click',()=>{activeTab='causal';document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab==='causal'));selection={type:'causal_node',id:n.event_id};refresh();});
+  });
+
+  // Legend
+  g.append('text').attr('x',W-80).attr('y',12).attr('font-size','8px').attr('fill','var(--dim)').text('● Clusters  ▲ Causal');
+}
+
+function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+window.addEventListener('resize', () => { if(clusterData||graphData) refresh(); });
+
+// Init
+showDropzone();
+</script>
+</body>
+</html>

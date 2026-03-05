@@ -31,6 +31,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from belief_graph.models import EventNode, EventType
+from pipeline.normalizer import DocumentNormalizer
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +96,10 @@ class EventClusterer:
         self,
         similarity_threshold: float = 0.75,
         model_name: str = "all-mpnet-base-v2",
-        time_window_hours: float = 48,
+        time_window_hours: float = 96,
+        temporal_decay_tau: float = 12.0,
+        entity_weight: float = 0.20,
+        normalizer: Optional[DocumentNormalizer] = None,
     ):
         """
         Initialize the event clusterer.
@@ -103,19 +107,31 @@ class EventClusterer:
         Args:
             similarity_threshold: Minimum cosine similarity to cluster events (0.0-1.0)
             model_name: Sentence transformer model to use
-            time_window_hours: Maximum time difference (in hours) between events to
-                              allow clustering.  Pairs outside this window get their
-                              similarity forced to 0 before clustering.
+            time_window_hours: Time window (hours) for full-similarity clustering.
+                              Events within this window keep full similarity.
+                              Events beyond it get exponentially decayed similarity
+                              instead of being hard-cut to 0.  Default 96 = ±2 days.
+            temporal_decay_tau: Decay constant (hours) for the soft temporal falloff.
+                               Controls how quickly similarity drops beyond the window.
+                               Smaller = sharper dropoff.  Default 12h.
+            entity_weight: Weight for entity-overlap Jaccard boost (0.0-1.0).
+                          Final similarity = (1 - entity_weight) * semantic + entity_weight * jaccard.
+            normalizer: Optional document normalizer for loading body text.
         """
         self.similarity_threshold = similarity_threshold
         self.model_name = model_name
         self.time_window_hours = time_window_hours
+        self.temporal_decay_tau = temporal_decay_tau
+        self.entity_weight = entity_weight
         self._model = None
         self._model_loaded = False
+        self._normalizer = normalizer
+        self._doc_cache: Dict[str, Optional[object]] = {}  # cache loaded docs
         
         logger.info(
             f"EventClusterer initialized with threshold={similarity_threshold}, "
-            f"model={model_name}, time_window={time_window_hours}h"
+            f"model={model_name}, time_window={time_window_hours}h, "
+            f"decay_tau={temporal_decay_tau}h, entity_weight={entity_weight}"
         )
     
     def _load_model(self):
@@ -134,13 +150,22 @@ class EventClusterer:
             self._model = None
             self._model_loaded = True  # Mark as attempted
     
-    def _get_event_text(self, event: EventNode) -> str:
+    def _get_event_text(
+        self,
+        event: EventNode,
+        market_question: Optional[str] = None,
+    ) -> str:
         """
         Extract text representation of an event for embedding.
         
-        Uses title, action, object, and actors for comprehensive representation.
+        Uses market context + title + body snippet + actors for a comprehensive,
+        semantically rich representation that produces better clustering.
         """
         parts = []
+        
+        # Prepend market question as context anchor
+        if market_question:
+            parts.append(f"Market: {market_question}.")
         
         # Use raw title if available
         if event.raw_title:
@@ -152,6 +177,11 @@ class EventClusterer:
             if event.object:
                 parts.append(event.object)
         
+        # Add body text snippet from source document (first ~300 chars)
+        body_snippet = self._get_body_snippet(event)
+        if body_snippet:
+            parts.append(body_snippet)
+        
         # Add key actors
         if event.actors:
             actors_str = ", ".join(event.actors[:5])
@@ -159,12 +189,55 @@ class EventClusterer:
         
         return " ".join(parts)
     
-    def _compute_embeddings(self, events: List[EventNode]) -> Optional[np.ndarray]:
+    def _load_doc_cached(self, doc_id: str):
+        """Load a document from disk, using cache to avoid repeated I/O."""
+        if doc_id in self._doc_cache:
+            return self._doc_cache[doc_id]
+        
+        if self._normalizer is None:
+            try:
+                self._normalizer = DocumentNormalizer()
+            except Exception:
+                self._doc_cache[doc_id] = None
+                return None
+        
+        try:
+            doc = self._normalizer.load(doc_id)
+            self._doc_cache[doc_id] = doc
+            return doc
+        except Exception as e:
+            logger.debug(f"Could not load doc {doc_id}: {e}")
+            self._doc_cache[doc_id] = None
+            return None
+    
+    def _get_body_snippet(self, event: EventNode, max_chars: int = 300) -> str:
+        """
+        Load the first N characters of the source document body text.
+        Uses document cache to avoid repeated disk I/O.
+        """
+        if not event.source_doc_id:
+            return ""
+        
+        doc = self._load_doc_cached(event.source_doc_id)
+        if doc and doc.raw_text:
+            text = doc.raw_text
+            if doc.title and text.startswith(doc.title):
+                text = text[len(doc.title):].lstrip()
+            return text[:max_chars]
+        
+        return ""
+    
+    def _compute_embeddings(
+        self,
+        events: List[EventNode],
+        market_question: Optional[str] = None,
+    ) -> Optional[np.ndarray]:
         """
         Compute embeddings for a list of events.
         
         Args:
             events: List of EventNode objects
+            market_question: Optional market context to anchor embeddings
         
         Returns:
             Numpy array of embeddings or None if model unavailable
@@ -175,7 +248,10 @@ class EventClusterer:
             logger.warning("Model not available, cannot compute embeddings")
             return None
         
-        texts = [self._get_event_text(event) for event in events]
+        texts = [
+            self._get_event_text(event, market_question=market_question)
+            for event in events
+        ]
         
         try:
             embeddings = self._model.encode(
@@ -207,40 +283,89 @@ class EventClusterer:
         
         return similarity
     
-    def _apply_temporal_mask(
+    def _apply_temporal_decay(
         self,
         events: List[EventNode],
         similarity_matrix: np.ndarray,
     ) -> np.ndarray:
         """
-        Zero out similarity for event pairs that are temporally distant.
+        Apply soft temporal decay using vectorized numpy operations.
 
-        If either event has ``timestamp=None`` the pair is left unmasked
-        (conservative — we allow the merge when time is unknown).
-
-        Args:
-            events: List of events
-            similarity_matrix: Raw cosine-similarity matrix (n×n)
-
-        Returns:
-            A *copy* of the similarity matrix with out-of-window pairs zeroed.
+        Uses numpy broadcasting instead of O(n²) Python loop for speed.
+        Events with timestamp=None are treated conservatively (no decay).
         """
-        masked = similarity_matrix.copy()
         n = len(events)
         window_seconds = self.time_window_hours * 3600
+        tau_seconds = self.temporal_decay_tau * 3600
 
+        # Extract timestamps as epoch seconds; use NaN for None
+        epoch = np.full(n, np.nan)
+        for i, ev in enumerate(events):
+            if ev.timestamp is not None:
+                epoch[i] = ev.timestamp.timestamp()
+
+        # Vectorized pairwise time difference matrix
+        diff = np.abs(epoch[:, None] - epoch[None, :])  # n×n, NaN where unknown
+
+        # Compute decay factors: 1.0 within window, exp(-overshoot/tau) beyond
+        overshoot = np.maximum(0.0, diff - window_seconds)
+        decay_matrix = np.exp(-overshoot / tau_seconds)
+
+        # Where either timestamp is NaN, keep decay = 1.0 (no penalty)
+        nan_mask = np.isnan(diff)
+        decay_matrix[nan_mask] = 1.0
+
+        # Diagonal stays 1.0
+        np.fill_diagonal(decay_matrix, 1.0)
+
+        return similarity_matrix * decay_matrix
+
+    def _compute_entity_overlap_matrix(
+        self,
+        events: List[EventNode],
+    ) -> np.ndarray:
+        """
+        Compute pairwise entity Jaccard similarity matrix.
+
+        Uses document cache to avoid repeated disk I/O.
+        Pre-computes entity sets, then vectorizes the Jaccard computation.
+        """
+        n = len(events)
+        jaccard = np.zeros((n, n))
+
+        # Build entity sets (uses cached docs — no extra disk I/O)
+        entity_sets: List[Set[str]] = []
+        for event in events:
+            entities: Set[str] = set()
+            if event.actors:
+                entities.update(a.lower().strip() for a in event.actors)
+            if event.source_doc_id:
+                doc = self._load_doc_cached(event.source_doc_id)
+                if doc and hasattr(doc, 'extracted_entities') and doc.extracted_entities:
+                    entities.update(
+                        e.get("text", "").lower().strip()
+                        for e in doc.extracted_entities
+                        if e.get("text")
+                    )
+            entity_sets.append(entities)
+
+        # Pre-compute set sizes for vectorized Jaccard
         for i in range(n):
+            jaccard[i, i] = 1.0
+            if not entity_sets[i]:
+                continue
             for j in range(i + 1, n):
-                ts_i = events[i].timestamp
-                ts_j = events[j].timestamp
-                if ts_i is None or ts_j is None:
-                    continue  # can't judge — leave similarity intact
-                time_diff = abs((ts_i - ts_j).total_seconds())
-                if time_diff > window_seconds:
-                    masked[i, j] = 0.0
-                    masked[j, i] = 0.0
+                if not entity_sets[j]:
+                    continue
+                intersection = len(entity_sets[i] & entity_sets[j])
+                if intersection == 0:
+                    continue
+                union = len(entity_sets[i] | entity_sets[j])
+                score = intersection / union
+                jaccard[i, j] = score
+                jaccard[j, i] = score
 
-        return masked
+        return jaccard
 
     def _cluster_by_similarity(
         self,
@@ -251,16 +376,15 @@ class EventClusterer:
         Group events into clusters using Hierarchical Agglomerative
         Clustering (HAC) with **average linkage**.
 
-        Average linkage avoids the single-linkage chaining problem by
-        requiring the *mean* pairwise similarity of a merge to exceed
-        the threshold, rather than just a single pair.
-
-        Before clustering the similarity matrix is masked by temporal
-        proximity so chronologically distant events cannot merge.
+        Pipeline:
+        1. Compute entity-overlap Jaccard matrix
+        2. Fuse: final_sim = (1-w)*semantic + w*entity_jaccard
+        3. Apply soft temporal decay (exponential falloff beyond window)
+        4. HAC average-linkage clustering on the fused matrix
 
         Args:
             events: List of events
-            similarity_matrix: Pairwise similarity matrix
+            similarity_matrix: Semantic pairwise similarity matrix
 
         Returns:
             List of clusters (each cluster is a list of event indices)
@@ -270,12 +394,20 @@ class EventClusterer:
         if n <= 1:
             return [[i] for i in range(n)]
 
-        # --- Phase 1: temporal mask ---
-        masked_sim = self._apply_temporal_mask(events, similarity_matrix)
+        # --- Phase 1: Entity overlap Jaccard boost ---
+        # Use max(semantic, blended) so entity overlap can only BOOST
+        # similarity, never dilute it when entity data is sparse/absent.
+        entity_jaccard = self._compute_entity_overlap_matrix(events)
+        w = self.entity_weight
+        blended = (1 - w) * similarity_matrix + w * entity_jaccard
+        fused_sim = np.maximum(similarity_matrix, blended)
 
-        # --- Phase 2: HAC with average linkage ---
+        # --- Phase 2: Soft temporal decay ---
+        decayed_sim = self._apply_temporal_decay(events, fused_sim)
+
+        # --- Phase 3: HAC with average linkage ---
         # Convert similarity → distance (sklearn expects distance)
-        distance_matrix = 1.0 - masked_sim
+        distance_matrix = 1.0 - decayed_sim
         np.fill_diagonal(distance_matrix, 0.0)  # self-distance = 0
         # Clamp any floating-point noise
         distance_matrix = np.clip(distance_matrix, 0.0, 2.0)
@@ -296,7 +428,7 @@ class EventClusterer:
             logger.warning(
                 f"HAC clustering failed ({e}), falling back to greedy merge"
             )
-            return self._cluster_greedy_fallback(events, masked_sim)
+            return self._cluster_greedy_fallback(events, decayed_sim)
 
         # Convert labels → list of clusters
         cluster_dict: Dict[int, List[int]] = defaultdict(list)
@@ -490,7 +622,8 @@ class EventClusterer:
     def cluster_events(
         self,
         events: List[EventNode],
-        min_cluster_size: int = 1
+        min_cluster_size: int = 1,
+        market_question: Optional[str] = None,
     ) -> List[ClusteredEvent]:
         """
         Cluster similar events together.
@@ -498,6 +631,9 @@ class EventClusterer:
         Args:
             events: List of EventNode objects to cluster
             min_cluster_size: Minimum events to form a cluster (default 1)
+            market_question: Optional market question text to anchor embeddings.
+                           Significantly improves clustering quality by giving
+                           all articles a shared context prefix.
         
         Returns:
             List of ClusteredEvent objects
@@ -505,20 +641,23 @@ class EventClusterer:
         if not events:
             return []
         
-        logger.info(f"Clustering {len(events)} events with threshold {self.similarity_threshold}")
+        logger.info(
+            f"Clustering {len(events)} events with threshold {self.similarity_threshold}"
+            f"{f' (market: {market_question[:50]}...)' if market_question else ''}"
+        )
         
-        # Compute embeddings
-        embeddings = self._compute_embeddings(events)
+        # Compute embeddings (with optional market context)
+        embeddings = self._compute_embeddings(events, market_question=market_question)
         
         if embeddings is None:
             # Fall back to no clustering (each event is its own cluster)
             logger.warning("Falling back to no clustering (model unavailable)")
             return self._create_singleton_clusters(events)
         
-        # Compute similarity matrix
+        # Compute semantic similarity matrix
         similarity_matrix = self._compute_similarity_matrix(embeddings)
         
-        # Find clusters (Phase 1+2: temporal mask + HAC average linkage)
+        # Find clusters (entity boost + temporal decay + HAC average linkage)
         clusters = self._cluster_by_similarity(events, similarity_matrix)
         
         logger.info(f"Found {len(clusters)} clusters from {len(events)} events")
@@ -595,7 +734,8 @@ def cluster_events(
     events: List[EventNode],
     similarity_threshold: float = 0.75,
     min_cluster_size: int = 1,
-    time_window_hours: float = 48,
+    time_window_hours: float = 96,
+    market_question: Optional[str] = None,
 ) -> List[ClusteredEvent]:
     """
     Convenience function to cluster events.
@@ -604,7 +744,8 @@ def cluster_events(
         events: List of events to cluster
         similarity_threshold: Minimum similarity to group (0.0-1.0)
         min_cluster_size: Minimum events per cluster
-        time_window_hours: Maximum temporal distance for clustering
+        time_window_hours: Maximum temporal distance for clustering (default 96 = ±2 days)
+        market_question: Optional market question to anchor embeddings
     
     Returns:
         List of ClusteredEvent objects
@@ -613,7 +754,9 @@ def cluster_events(
         similarity_threshold=similarity_threshold,
         time_window_hours=time_window_hours,
     )
-    return clusterer.cluster_events(events, min_cluster_size=min_cluster_size)
+    return clusterer.cluster_events(
+        events, min_cluster_size=min_cluster_size, market_question=market_question
+    )
 
 
 if __name__ == "__main__":

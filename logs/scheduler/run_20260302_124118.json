@@ -1,0 +1,33 @@
+{
+  "started_at": "2026-03-02T12:41:18.021409+00:00",
+  "events_processed": 5,
+  "total_new_docs": 28,
+  "by_event": {
+    "gemini-5-release-2026": {
+      "new_docs": 1,
+      "queries_run": 26,
+      "probability": null
+    },
+    "gpt-5-release-2026": {
+      "new_docs": 1,
+      "queries_run": 26,
+      "probability": null
+    },
+    "eu-ai-act-enforcement-2027": {
+      "new_docs": 14,
+      "queries_run": 26,
+      "probability": null
+    },
+    "gemini-3pt5-release-2026": {
+      "new_docs": 0,
+      "queries_run": 26,
+      "probability": 0.51
+    },
+    "iphone-17e-announce-feb-2026": {
+      "new_docs": 12,
+      "queries_run": 26,
+      "probability": 0.001
+    }
+  },
+  "errors": []
+}

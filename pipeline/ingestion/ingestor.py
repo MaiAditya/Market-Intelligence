@@ -153,6 +153,11 @@ class DataIngestor:
         # Track already ingested URLs to avoid duplicates
         self._ingested_urls: Set[str] = set()
         self._load_ingested_urls()
+        
+        # Track content hashes to catch same content from different URLs
+        self._seen_hashes: Set[str] = set()
+        self._hashes_path = self.data_dir / ".seen_hashes.json"
+        self._load_seen_hashes()
     
     def _load_ingested_urls(self) -> None:
         """Load set of already ingested URLs from existing documents."""
@@ -165,17 +170,51 @@ class DataIngestor:
             except Exception:
                 pass
     
+    def _load_seen_hashes(self) -> None:
+        """Load content hashes from persistence file."""
+        if self._hashes_path.exists():
+            try:
+                with open(self._hashes_path, 'r') as f:
+                    self._seen_hashes = set(json.load(f))
+                logger.debug(f"Loaded {len(self._seen_hashes)} content hashes")
+            except Exception:
+                pass
+    
+    def _save_seen_hashes(self) -> None:
+        """Persist content hashes to disk."""
+        try:
+            with open(self._hashes_path, 'w') as f:
+                json.dump(list(self._seen_hashes), f)
+        except Exception as e:
+            logger.warning(f"Failed to save content hashes: {e}")
+    
+    @staticmethod
+    def _compute_content_hash(title: str, text: str) -> str:
+        """Compute SHA-256 hash of title + first 200 chars of text for dedup."""
+        content = (title or "").strip().lower() + "|" + (text or "")[:200].strip().lower()
+        return hashlib.sha256(content.encode('utf-8', errors='ignore')).hexdigest()
+    
     def _save_document(self, doc: IngestedDocument) -> bool:
         """
-        Save ingested document to disk if URL is new.
+        Save ingested document to disk if URL and content are new.
+
+        Two-layer dedup:
+        1. URL dedup — exact URL match
+        2. Content hash dedup — SHA-256 of title + first 200 chars
 
         Returns:
             True if saved, False if skipped as duplicate.
         """
+        content_hash = self._compute_content_hash(doc.title, doc.raw_text)
+
         with self._url_lock:
             if doc.url in self._ingested_urls:
                 return False
+            if content_hash in self._seen_hashes:
+                logger.debug(f"Content hash duplicate: {doc.title[:60]}")
+                return False
             self._ingested_urls.add(doc.url)
+            self._seen_hashes.add(content_hash)
 
         from utils.json_utils import dump_json
         doc_path = self.data_dir / f"{doc.doc_id}.json"
@@ -185,7 +224,13 @@ class DataIngestor:
         except Exception:
             with self._url_lock:
                 self._ingested_urls.discard(doc.url)
+                self._seen_hashes.discard(content_hash)
             raise
+        
+        # Persist hashes periodically (every 50 new docs)
+        if len(self._seen_hashes) % 50 == 0:
+            self._save_seen_hashes()
+        
         return True
     
     def _reddit_post_to_document(

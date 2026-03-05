@@ -1,0 +1,13 @@
+{
+  "started_at": "2026-03-02T13:00:16.545707+00:00",
+  "events_processed": 1,
+  "total_new_docs": 5,
+  "by_event": {
+    "gemini-3pt5-release-2026": {
+      "new_docs": 5,
+      "queries_run": 26,
+      "probability": 0.51
+    }
+  },
+  "errors": []
+}

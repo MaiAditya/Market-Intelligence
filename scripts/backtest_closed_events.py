@@ -76,6 +76,79 @@ def _slug_to_event_id(slug: str, run_tag: str = "", isolate_run_ids: bool = True
     return base
 
 
+def _resolve_before_date(event: Any, explicit_before_date: str = "") -> str:
+    """
+    Resolve date string (YYYY-MM-DD) for query `before:` filter.
+    Priority:
+      1) explicit CLI value
+      2) event.deadline
+    """
+    if explicit_before_date:
+        return explicit_before_date.strip()
+
+    deadline = getattr(event, "deadline", None)
+    if not deadline:
+        return ""
+    try:
+        dt = datetime.fromisoformat(str(deadline).replace("Z", "+00:00"))
+        return dt.date().isoformat()
+    except Exception:
+        return ""
+
+
+def _resolve_after_date(event_meta: Dict[str, Any]) -> str:
+    """
+    Resolve date string (YYYY-MM-DD) for query `after:` filter.
+    Uses backtest metadata start_date when available.
+    """
+    if not isinstance(event_meta, dict):
+        return ""
+    raw = event_meta.get("start_date")
+    if not raw:
+        return ""
+    try:
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        return dt.date().isoformat()
+    except Exception:
+        return ""
+
+
+def _apply_time_filters(
+    queries: List[Dict[str, str]],
+    before_date: str,
+    after_date: str,
+) -> List[Dict[str, str]]:
+    if not before_date and not after_date:
+        return queries
+
+    out: List[Dict[str, str]] = []
+    suffix_parts: List[str] = []
+    if after_date:
+        suffix_parts.append(f"after:{after_date}")
+    if before_date:
+        suffix_parts.append(f"before:{before_date}")
+    suffix = " " + " ".join(suffix_parts)
+
+    for q in queries:
+        text = q.get("query", "")
+        has_before = "before:" in text
+        has_after = "after:" in text
+        if (before_date and has_before) or (after_date and has_after):
+            out.append({"query": text, "query_type": q.get("query_type", "")})
+            continue
+        if suffix_parts:
+            text = f"{text}{suffix}"
+        out.append({"query": text, "query_type": q.get("query_type", "")})
+    return out
+
+
+def _parse_iso_datetime_utc_naive(value: str) -> datetime:
+    dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
 def _extract_entities(question: str, slug: str) -> Tuple[List[str], List[str], List[str]]:
     words = re.findall(r"[A-Za-z][A-Za-z0-9\-\+\.]*", question or "")
     clean = [w for w in words if w.lower() not in STOPWORDS and len(w) > 2]
@@ -200,6 +273,7 @@ def _build_temp_registry(
         )
         primary_entities, secondary_entities, aliases = _extract_entities(question, slug)
         deadline = item.get("end_date") or fallback_deadline
+        start_date = item.get("start_date")
 
         event_obj = {
             "event_id": event_id,
@@ -210,11 +284,24 @@ def _build_temp_registry(
             "secondary_entities": secondary_entities,
             "aliases": aliases,
             "deadline": deadline,
+            "start_date": start_date,
             "dependencies": DEFAULT_DEPENDENCIES,
             "polymarket_slug": slug,
         }
         out_events.append(event_obj)
-        event_lookup[event_id] = event_obj
+        event_lookup[event_id] = {
+            "event_obj": event_obj,
+            "backtest_meta": {
+                "parent_slug": item.get("parent_slug"),
+                "market_type": item.get("market_type"),
+                "child_volume": item.get("child_volume"),
+                "start_date": item.get("start_date"),
+                "end_date": item.get("end_date"),
+                "selected_token": item.get("selected_token"),
+                "token_checks": item.get("token_checks", []),
+                "any_history_available": item.get("any_history_available"),
+            },
+        }
 
     cfg = {
         "dependency_descriptions": base_cfg.get("dependency_descriptions", {}),
@@ -251,6 +338,7 @@ def _run_single_event(
 
     event_dir = Path(run_dir) / event_id
     event_dir.mkdir(parents=True, exist_ok=True)
+    event_meta = (params.get("event_meta_by_id") or {}).get(event_id, {}) or {}
 
     steps: Dict[str, float] = {}
     diagnostics: Dict[str, Any] = {}
@@ -260,8 +348,18 @@ def _run_single_event(
     t = time.perf_counter()
     query_set = query_generator.generate_queries_for_event(event)
     queries = [{"query": q.query, "query_type": q.query_type} for q in query_set.queries]
+    before_date = ""
+    after_date = _resolve_after_date(event_meta)
+    if params.get("enable_before_date_filter", True):
+        before_date = _resolve_before_date(event, params.get("search_before_date", ""))
+    queries = _apply_time_filters(queries, before_date, after_date)
     steps["generate_queries_sec"] = round(time.perf_counter() - t, 3)
     diagnostics["query_count"] = len(queries)
+    diagnostics["query_before_date"] = before_date or None
+    diagnostics["query_after_date"] = after_date or None
+    diagnostics["query_before_filter_enabled"] = bool(params.get("enable_before_date_filter", True))
+    diagnostics["query_after_filter_enabled"] = bool(after_date)
+    diagnostics["query_sample"] = queries[:3]
 
     # 2) ingestion
     t = time.perf_counter()
@@ -304,11 +402,24 @@ def _run_single_event(
 
     # 7) graph
     t = time.perf_counter()
+    graph_window_start = None
+    graph_window_end = None
+    try:
+        if after_date:
+            graph_window_start = _parse_iso_datetime_utc_naive(f"{after_date}T00:00:00")
+        if before_date:
+            graph_window_end = _parse_iso_datetime_utc_naive(f"{before_date}T23:59:59")
+    except Exception:
+        graph_window_start = None
+        graph_window_end = None
+
     graph = graph_builder.build(
         belief_event_id=event_id,
         max_events=params["max_events"],
         max_edges=params["max_edges"],
         market_window_only=True,
+        window_start=graph_window_start,
+        window_end=graph_window_end,
     )
     graph_path = storage.save(graph)
     steps["graph_sec"] = round(time.perf_counter() - t, 3)
@@ -334,6 +445,13 @@ def _run_single_event(
         orders_only=params["orders_only"],
         dome_bearer_token_source=params.get("dome_bearer_token_source", "none"),
         skip_out_of_window_events=params["skip_out_of_window_events"],
+        explicit_token_candidates=event_meta.get("token_checks", []),
+        orders_fetch_all=params["orders_fetch_all"],
+        orders_fetch_all_max_pages=params["orders_fetch_all_max_pages"],
+        price_mapping_mode=params["price_mapping_mode"],
+        burst_gap_minutes=params["burst_gap_minutes"],
+        max_event_bursts=params["max_event_bursts"],
+        burst_buffer_minutes=params["burst_buffer_minutes"],
     )
     steps["report_sec"] = round(time.perf_counter() - t, 3)
     diagnostics["report_summary"] = report.get("summary", {})
@@ -363,10 +481,108 @@ def _select_events(closed_events_file: Path, num_events: int, start_index: int) 
     with open(closed_events_file, "r", encoding="utf-8") as f:
         payload = json.load(f)
 
+    # Parent-level date fallbacks (useful for older enriched files that do not
+    # include child start_date yet).
+    parent_start_by_slug: Dict[str, str] = {}
+    parent_end_by_slug: Dict[str, str] = {}
+    for e in payload.get("events", []) or []:
+        slug = e.get("slug")
+        if not slug:
+            continue
+        if e.get("start_date"):
+            parent_start_by_slug[str(slug)] = str(e.get("start_date"))
+        if e.get("end_date"):
+            parent_end_by_slug[str(slug)] = str(e.get("end_date"))
+
+    if not parent_start_by_slug:
+        fallback_closed = project_root / "data" / "backtests" / "closed_events.json"
+        if fallback_closed.exists():
+            try:
+                with open(fallback_closed, "r", encoding="utf-8") as f:
+                    closed_payload = json.load(f)
+                for e in closed_payload.get("events", []) or []:
+                    slug = e.get("slug")
+                    if not slug:
+                        continue
+                    if e.get("start_date"):
+                        parent_start_by_slug[str(slug)] = str(e.get("start_date"))
+                    if e.get("end_date"):
+                        parent_end_by_slug[str(slug)] = str(e.get("end_date"))
+            except Exception:
+                pass
+
+    # Preferred mode for enriched structure:
+    # run each child binary market independently from backtest_targets.
+    targets = payload.get("backtest_targets", [])
+    if isinstance(targets, list) and targets:
+        # Build child market -> end_date map from parents/selected_children when available.
+        end_date_by_child_slug: Dict[str, str] = {}
+        start_date_by_child_slug: Dict[str, str] = {}
+        token_checks_by_child_slug: Dict[str, List[Dict[str, Any]]] = {}
+        selected_token_by_child_slug: Dict[str, Dict[str, Any]] = {}
+        parents = payload.get("parents", [])
+        if isinstance(parents, list):
+            for p in parents:
+                for c in p.get("selected_children", []) or []:
+                    child_slug = c.get("market_slug")
+                    child_end = c.get("end_date")
+                    child_start = c.get("start_date")
+                    if child_slug and child_end:
+                        end_date_by_child_slug[str(child_slug)] = str(child_end)
+                    if child_slug and child_start:
+                        start_date_by_child_slug[str(child_slug)] = str(child_start)
+                    if child_slug and isinstance(c.get("token_checks"), list):
+                        token_checks_by_child_slug[str(child_slug)] = c.get("token_checks", [])
+                    if child_slug and isinstance(c.get("selected_token"), dict):
+                        selected_token_by_child_slug[str(child_slug)] = c.get("selected_token", {})
+
+        events: List[Dict[str, Any]] = []
+        for t in targets:
+            child_slug = t.get("child_market_slug") or t.get("market_slug") or t.get("slug")
+            if not child_slug:
+                continue
+            child_question = t.get("child_question") or t.get("question") or str(child_slug)
+            child_end_date = (
+                t.get("end_date")
+                or t.get("parent_end_date")
+                or parent_end_by_slug.get(str(t.get("parent_slug") or ""))
+                or end_date_by_child_slug.get(str(child_slug))
+            )
+            child_start_date = (
+                t.get("start_date")
+                or t.get("parent_start_date")
+                or parent_start_by_slug.get(str(t.get("parent_slug") or ""))
+                or start_date_by_child_slug.get(str(child_slug))
+            )
+            events.append(
+                {
+                    "slug": str(child_slug),
+                    "question": str(child_question),
+                    "start_date": child_start_date,
+                    "end_date": child_end_date,
+                    "parent_slug": t.get("parent_slug"),
+                    "market_type": t.get("market_type"),
+                    "child_volume": t.get("child_volume"),
+                    "selected_token": t.get("selected_token") or selected_token_by_child_slug.get(str(child_slug)),
+                    "token_checks": t.get("token_checks") or token_checks_by_child_slug.get(str(child_slug), []),
+                    "any_history_available": t.get("any_history_available"),
+                }
+            )
+
+        if start_index > 0:
+            events = events[start_index:]
+        logger.info(
+            f"Using enriched backtest_targets mode: {len(events[:num_events])} "
+            f"child markets selected from {len(targets)} targets"
+        )
+        return events[:num_events]
+
+    # Fallback mode: plain closed events list.
     events = payload.get("events", [])
     if start_index > 0:
         events = events[start_index:]
 
+    logger.info(f"Using closed events mode: {len(events[:num_events])} parent markets selected")
     return events[:num_events]
 
 
@@ -387,6 +603,16 @@ def main() -> None:
     parser.add_argument("--min-conf", type=float, default=0.3, help="Focused graph minimum confidence")
     parser.add_argument("--impact-window", type=int, default=2, help="Impact window in minutes")
     parser.add_argument(
+        "--search-before-date",
+        default="",
+        help="Apply query filter `before:YYYY-MM-DD` to all searches (default: event deadline date)",
+    )
+    parser.add_argument(
+        "--disable-before-date-filter",
+        action="store_true",
+        help="Disable automatic query `before:` filter for backtests",
+    )
+    parser.add_argument(
         "--price-history-source",
         choices=["clob", "orders", "auto"],
         default="auto",
@@ -406,10 +632,30 @@ def main() -> None:
         help="Do not fallback to CLOB if orders history fails",
     )
     parser.add_argument(
+        "--orders-fetch-all",
+        action="store_true",
+        help="Fetch all available Dome orders pages for selected token during impact mapping",
+    )
+    parser.add_argument(
+        "--orders-fetch-all-max-pages",
+        type=int,
+        default=2000,
+        help="Safety cap for --orders-fetch-all mode",
+    )
+    parser.add_argument(
         "--skip-out-of-window-events",
         action="store_true",
         help="Drop graph events outside selected token history window",
     )
+    parser.add_argument(
+        "--price-mapping-mode",
+        choices=["all_events", "burst_events"],
+        default="all_events",
+        help="all_events: map all graph events; burst_events: map only dense contiguous event windows",
+    )
+    parser.add_argument("--burst-gap-minutes", type=int, default=90, help="Max gap between contiguous events in burst mode")
+    parser.add_argument("--max-event-bursts", type=int, default=1, help="How many top dense bursts to map in burst mode")
+    parser.add_argument("--burst-buffer-minutes", type=int, default=120, help="Buffer around selected burst windows")
     parser.add_argument(
         "--parallel-events",
         type=int,
@@ -447,7 +693,7 @@ def main() -> None:
     temp_registry = run_dir / "temp_events.json"
     isolate_run_ids = not args.no_isolate_run_ids
     short_run_tag = run_id.replace("closed-backtest-", "")
-    _build_temp_registry(
+    event_lookup = _build_temp_registry(
         selected,
         temp_registry,
         run_tag=short_run_tag,
@@ -464,6 +710,8 @@ def main() -> None:
     dome_token_source = "arg" if args.dome_bearer_token else ("env" if os.getenv("DOME_BEARER_TOKEN") else "none")
     worker_params = {
         "skip_ingestion": args.skip_ingestion,
+        "enable_before_date_filter": not args.disable_before_date_filter,
+        "search_before_date": args.search_before_date,
         "max_events": args.max_events,
         "max_edges": args.max_edges,
         "top_n1": args.top_n1,
@@ -476,7 +724,17 @@ def main() -> None:
         "orders_max_pages": args.orders_max_pages,
         "orders_request_delay_sec": args.orders_request_delay_sec,
         "orders_only": args.orders_only,
+        "orders_fetch_all": args.orders_fetch_all,
+        "orders_fetch_all_max_pages": args.orders_fetch_all_max_pages,
         "skip_out_of_window_events": args.skip_out_of_window_events,
+        "price_mapping_mode": args.price_mapping_mode,
+        "burst_gap_minutes": args.burst_gap_minutes,
+        "max_event_bursts": args.max_event_bursts,
+        "burst_buffer_minutes": args.burst_buffer_minutes,
+        "event_meta_by_id": {
+            eid: (meta.get("backtest_meta", {}) if isinstance(meta, dict) else {})
+            for eid, meta in event_lookup.items()
+        },
     }
 
     if args.parallel_events > 1:

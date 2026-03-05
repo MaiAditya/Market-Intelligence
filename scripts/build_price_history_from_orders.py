@@ -80,6 +80,8 @@ def _fetch_orders_pages(
     backoff_base_sec: float = 1.5,
     backoff_max_sec: float = 60.0,
     request_delay_sec: float = 0.0,
+    min_timestamp: Optional[int] = None,
+    max_timestamp: Optional[int] = None,
 ) -> List[Path]:
     """
     Fetch paginated Dome orders for a token and persist pages as JSON files.
@@ -105,6 +107,43 @@ def _fetch_orders_pages(
     # continue from the last saved page.
     existing = sorted(pages_dir.glob(f"{token_id}_page_*.json"))
     if existing and not next_key:
+        # If caller requests a minimum timestamp bound, prefer selecting
+        # existing pages until that bound is reached (oldest page ts < min ts),
+        # instead of truncating to newest max_pages, which can hide needed
+        # historical range.
+        if min_timestamp:
+            cutoff = int(min_timestamp)
+            reached_cutoff = False
+            for fp in existing:
+                try:
+                    with open(fp, "r", encoding="utf-8") as f:
+                        payload = json.load(f)
+                    rows = payload.get("orders", []) or []
+                    ts_values = [_as_int(o.get("timestamp")) for o in rows if o.get("timestamp") is not None]
+                    if ts_values and min(ts_values) < cutoff:
+                        reached_cutoff = True
+                        break
+                except Exception:
+                    # Ignore malformed page and continue scanning.
+                    continue
+
+            if reached_cutoff:
+                logger.info(
+                    "Using existing pages for min_timestamp cutoff: selected=%s total_existing=%s cutoff=%s",
+                    len(existing),
+                    len(existing),
+                    cutoff,
+                )
+                return existing
+
+        if min_timestamp is None and len(existing) >= max_pages:
+            capped = existing[:max_pages]
+            logger.info(
+                "Existing pages exceed cap; using first %s pages only (total existing=%s)",
+                len(capped),
+                len(existing),
+            )
+            return capped
         files.extend(existing)
         last_file = existing[-1]
         with open(last_file, "r", encoding="utf-8") as f:
@@ -132,7 +171,12 @@ def _fetch_orders_pages(
         max_pages,
     )
 
-    while page <= max_pages:
+    # When a lower bound is provided, continue paging until that bound is reached
+    # (or API exhaustion), instead of hard-stopping at max_pages.
+    bounded_by_min_ts = min_timestamp is not None
+    while True:
+        if not bounded_by_min_ts and page > max_pages:
+            break
         params: Dict[str, Any] = {"token_id": token_id, "limit": limit}
         if next_key:
             params["pagination_key"] = next_key
@@ -187,6 +231,30 @@ def _fetch_orders_pages(
             len(payload.get("orders", []) or []),
             has_more,
         )
+
+        if min_timestamp:
+            orders = payload.get("orders", []) or []
+            ts_values = [_as_int(o.get("timestamp")) for o in orders if o.get("timestamp") is not None]
+            if ts_values and min(ts_values) < int(min_timestamp):
+                logger.info(
+                    "Reached min_timestamp=%s at page=%s (oldest_seen=%s); stopping early",
+                    int(min_timestamp),
+                    page,
+                    min(ts_values),
+                )
+                break
+        if max_timestamp:
+            # Keep fetching until we have moved from very recent pages down into
+            # the target window. This is informational; filtering happens later.
+            orders = payload.get("orders", []) or []
+            ts_values = [_as_int(o.get("timestamp")) for o in orders if o.get("timestamp") is not None]
+            if ts_values and max(ts_values) <= int(max_timestamp):
+                logger.info(
+                    "Reached max_timestamp=%s at page=%s (newest_seen=%s)",
+                    int(max_timestamp),
+                    page,
+                    max(ts_values),
+                )
 
         if not has_more or not next_key:
             break

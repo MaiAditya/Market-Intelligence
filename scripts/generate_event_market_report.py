@@ -127,6 +127,13 @@ def generate_report(
     orders_only: bool = False,
     dome_bearer_token_source: str = "none",
     skip_out_of_window_events: bool = False,
+    explicit_token_candidates: Optional[List[Dict]] = None,
+    orders_fetch_all: bool = False,
+    orders_fetch_all_max_pages: int = 2000,
+    price_mapping_mode: str = "all_events",
+    burst_gap_minutes: int = 90,
+    max_event_bursts: int = 1,
+    burst_buffer_minutes: int = 120,
 ) -> Dict:
     registry = get_registry()
     event = registry.get_event(event_id)
@@ -159,7 +166,13 @@ def generate_report(
             orders_only=orders_only or price_history_source == "orders",
             dome_bearer_token=dome_bearer_token,
             orders_max_pages=orders_max_pages,
+            orders_fetch_all=orders_fetch_all,
+            orders_fetch_all_max_pages=orders_fetch_all_max_pages,
             orders_request_delay_sec=orders_request_delay_sec,
+            price_mapping_mode=price_mapping_mode,
+            burst_gap_minutes=burst_gap_minutes,
+            max_event_bursts=max_event_bursts,
+            burst_buffer_minutes=burst_buffer_minutes,
         )
         resolved_graph_path = graph_path or str(
             project_root / "data" / "belief_graphs" / f"{event_id}_graph.json"
@@ -169,6 +182,7 @@ def generate_report(
             market_slug,
             enforce_market_window=True,
             skip_out_of_window_events=skip_out_of_window_events,
+            explicit_tokens=explicit_token_candidates,
         )
         timeline = analyzer.generate_timeline(impacts, market_slug, save=False)
     except Exception as e:
@@ -192,6 +206,13 @@ def generate_report(
             "dome_bearer_token_source": dome_bearer_token_source,
             "orders_only": orders_only,
             "skip_out_of_window_events": skip_out_of_window_events,
+            "explicit_token_candidates_count": len(explicit_token_candidates or []),
+            "orders_fetch_all": orders_fetch_all,
+            "orders_fetch_all_max_pages": orders_fetch_all_max_pages,
+            "price_mapping_mode": price_mapping_mode,
+            "burst_gap_minutes": burst_gap_minutes,
+            "max_event_bursts": max_event_bursts,
+            "burst_buffer_minutes": burst_buffer_minutes,
         },
         "summary": {
             "graph_nodes": len(graph.event_nodes),
@@ -253,10 +274,30 @@ def main():
         help="Do not fallback to CLOB history if orders-based history fails",
     )
     parser.add_argument(
+        "--orders-fetch-all",
+        action="store_true",
+        help="Fetch all available Dome orders pages (until has_more=false) for selected token",
+    )
+    parser.add_argument(
+        "--orders-fetch-all-max-pages",
+        type=int,
+        default=2000,
+        help="Safety cap for --orders-fetch-all mode",
+    )
+    parser.add_argument(
         "--skip-out-of-window-events",
         action="store_true",
         help="Drop graph events outside selected token history window instead of keeping as out_of_range",
     )
+    parser.add_argument(
+        "--price-mapping-mode",
+        choices=["all_events", "burst_events"],
+        default="all_events",
+        help="all_events: map all graph events; burst_events: map only dense contiguous event windows",
+    )
+    parser.add_argument("--burst-gap-minutes", type=int, default=90, help="Max gap between contiguous events in burst mode")
+    parser.add_argument("--max-event-bursts", type=int, default=1, help="How many top dense bursts to map in burst mode")
+    parser.add_argument("--burst-buffer-minutes", type=int, default=120, help="Buffer around selected burst windows")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -281,6 +322,12 @@ def main():
         orders_request_delay_sec=args.orders_request_delay_sec,
         orders_only=args.orders_only,
         skip_out_of_window_events=args.skip_out_of_window_events,
+        orders_fetch_all=args.orders_fetch_all,
+        orders_fetch_all_max_pages=args.orders_fetch_all_max_pages,
+        price_mapping_mode=args.price_mapping_mode,
+        burst_gap_minutes=args.burst_gap_minutes,
+        max_event_bursts=args.max_event_bursts,
+        burst_buffer_minutes=args.burst_buffer_minutes,
     )
 
 

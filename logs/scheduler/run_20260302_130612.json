@@ -1,0 +1,78 @@
+{
+  "started_at": "2026-03-02T13:06:12.185128+00:00",
+  "events_processed": 1,
+  "total_new_docs": 9,
+  "by_event": {
+    "gemini-3pt5-release-2026": {
+      "new_docs": 9,
+      "queries_run": 26,
+      "probability": 0.51,
+      "documents": [
+        {
+          "title": "Gemini 3 Launch: Benchmark, Pricing & How to access",
+          "source": "web",
+          "domain": "www.growthjockey.com",
+          "chars": 19326,
+          "url": "https://www.growthjockey.com/blogs/gemini-3"
+        },
+        {
+          "title": "\u200eGoogle Gemini App",
+          "source": "web",
+          "domain": "apps.apple.com",
+          "chars": 1967,
+          "url": "https://apps.apple.com/us/app/google-gemini/id6477489729"
+        },
+        {
+          "title": "Learn about Gemini, the everyday AI assistant from Google",
+          "source": "web",
+          "domain": "gemini.google",
+          "chars": 8576,
+          "url": "https://gemini.google/in/about/?hl=en-IN"
+        },
+        {
+          "title": "Introducing Gemini, your new personal AI assistant",
+          "source": "web",
+          "domain": "gemini.google",
+          "chars": 1437,
+          "url": "https://gemini.google/assistant/"
+        },
+        {
+          "title": "8 Gemini tricks on Android most people still aren\u2019t using",
+          "source": "web",
+          "domain": "www.androidauthority.com",
+          "chars": 6269,
+          "url": "https://www.androidauthority.com/gemini-tips-and-tricks-android-3644941/"
+        },
+        {
+          "title": "Google Workspace Updates: Introducing Nano Banana 2 in the Gemini app",
+          "source": "web",
+          "domain": "workspaceupdates.googleblog.com",
+          "chars": 2708,
+          "url": "https://workspaceupdates.googleblog.com/2026/02/introducing-nano-banana-2-in-gem"
+        },
+        {
+          "title": "Google's Gemini 3.1 Pro is here, and it just doubled its reasoning score",
+          "source": "web",
+          "domain": "www.zdnet.com",
+          "chars": 3936,
+          "url": "https://www.zdnet.com/article/google-gemini-3-1-pro-release-ai-model/"
+        },
+        {
+          "title": "Google Images",
+          "source": "web",
+          "domain": "www.google.co.in",
+          "chars": 238,
+          "url": "https://www.google.co.in/imghp"
+        },
+        {
+          "title": "Google Translate",
+          "source": "web",
+          "domain": "translate.google.co.in",
+          "chars": 66721,
+          "url": "https://translate.google.co.in/"
+        }
+      ]
+    }
+  },
+  "errors": []
+}

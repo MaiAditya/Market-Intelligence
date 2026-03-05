@@ -116,7 +116,7 @@ class WebScraper:
         self._last_request_time[domain] = time.time()
     
     def _extract_with_newspaper(self, url: str) -> Optional[ScrapedPage]:
-        """Try to extract article using newspaper3k."""
+        """Try to extract article using newspaper4k (or newspaper3k fallback)."""
         try:
             from newspaper import Article
             
@@ -124,9 +124,14 @@ class WebScraper:
             article.download()
             article.parse()
             
+            # newspaper4k returns empty text for non-article pages
+            if not article.text or len(article.text.strip()) < 100:
+                logger.debug(f"newspaper: too little text ({len(article.text or '')} chars) for {url}")
+                return None
+            
             domain = urlparse(url).netloc
             
-            return ScrapedPage(
+            result = ScrapedPage(
                 url=url,
                 title=article.title or "",
                 text=article.text or "",
@@ -137,12 +142,17 @@ class WebScraper:
                 meta_description=article.meta_description or "",
                 images=list(article.images)[:10]
             )
+            logger.info(
+                f"  ✓ newspaper: {article.title[:60] if article.title else '(no title)'} "
+                f"({len(article.text)} chars, {domain})"
+            )
+            return result
             
         except ImportError:
-            logger.debug("newspaper3k not available, using fallback")
+            logger.debug("newspaper4k/newspaper3k not available, using BeautifulSoup fallback")
             return None
         except Exception as e:
-            logger.debug(f"newspaper3k extraction failed: {e}")
+            logger.debug(f"newspaper extraction failed for {url}: {e}")
             return None
     
     def _extract_with_beautifulsoup(self, url: str, html: str) -> ScrapedPage:
@@ -373,45 +383,35 @@ class WebScraper:
         Returns:
             List of result URLs
         """
-        # Try the new ddgs package first (preferred)
+        # Try the DDGS package (preferred — fast, no 30s HTML timeouts)
+        ddgs_available = False
+        DDGS = None
         try:
             from ddgs import DDGS
-            
-            results = []
-            with DDGS() as ddgs:
-                for r in ddgs.text(query, max_results=num_results):
-                    # The result dict has 'href' key for the URL
-                    url = r.get('href') or r.get('link') or r.get('url')
-                    if url:
-                        results.append(url)
-            
-            if results:
-                logger.info(f"DuckDuckGo search '{query}': found {len(results)} results")
-                return results
-                
+            ddgs_available = True
         except ImportError:
-            # Try the old package name as fallback
             try:
                 from duckduckgo_search import DDGS
-                
+                ddgs_available = True
+            except ImportError:
+                pass
+
+        if ddgs_available and DDGS is not None:
+            try:
                 results = []
                 with DDGS() as ddgs:
                     for r in ddgs.text(query, max_results=num_results):
                         url = r.get('href') or r.get('link') or r.get('url')
                         if url:
                             results.append(url)
-                
-                if results:
-                    logger.info(f"DuckDuckGo search '{query}': found {len(results)} results")
-                    return results
-            except ImportError:
-                logger.debug("ddgs/duckduckgo-search not installed, trying HTML scraping")
+                logger.info(f"DuckDuckGo search '{query}': found {len(results)} results")
+                # Return even if empty — do NOT fall through to slow HTML scrape
+                return results
             except Exception as e:
-                logger.debug(f"DDGS search failed: {e}, trying HTML scraping")
-        except Exception as e:
-            logger.debug(f"DDGS search failed: {e}, trying HTML scraping")
-        
-        # Fallback: scrape DuckDuckGo HTML results directly
+                logger.debug(f"DDGS search failed: {e}")
+                return []
+
+        # Fallback: scrape DuckDuckGo HTML results directly (only if DDGS not installed)
         return self._search_duckduckgo_html(query, num_results)
     
     def _extract_url_from_ddg_redirect(self, href: str) -> Optional[str]:

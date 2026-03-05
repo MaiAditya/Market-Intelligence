@@ -88,9 +88,14 @@ class EventRegistry:
             config_path: Path to events.json. If None, uses default location.
         """
         if config_path is None:
-            # Default to config/events.json relative to project root
-            project_root = Path(__file__).parent.parent
-            config_path = project_root / "config" / "events.json"
+            # Check env var first (for Docker deployments)
+            config_dir = os.environ.get("AI_PIPELINE_CONFIG_DIR")
+            if config_dir:
+                config_path = Path(config_dir) / "config" / "events.json"
+            else:
+                # Default to config/events.json relative to project root
+                project_root = Path(__file__).parent.parent
+                config_path = project_root / "config" / "events.json"
         
         self.config_path = Path(config_path)
         self.events: Dict[str, Event] = {}

@@ -100,11 +100,17 @@ class PolymarketImpactAnalyzer:
         orders_history_dir: Optional[Path] = None,
         orders_api_limit: int = 100,
         orders_max_pages: int = 30,
+        orders_fetch_all: bool = False,
+        orders_fetch_all_max_pages: int = 2000,
         orders_timeout_sec: int = 30,
         orders_max_retries: int = 10,
         orders_backoff_base_sec: float = 2.0,
         orders_backoff_max_sec: float = 90.0,
         orders_request_delay_sec: float = 0.35,
+        price_mapping_mode: str = "all_events",
+        burst_gap_minutes: int = 90,
+        max_event_bursts: int = 1,
+        burst_buffer_minutes: int = 120,
     ):
         """
         Args:
@@ -127,11 +133,17 @@ class PolymarketImpactAnalyzer:
         self.orders_history_dir = Path(orders_history_dir or "data/backtests")
         self.orders_api_limit = orders_api_limit
         self.orders_max_pages = orders_max_pages
+        self.orders_fetch_all = orders_fetch_all
+        self.orders_fetch_all_max_pages = orders_fetch_all_max_pages
         self.orders_timeout_sec = orders_timeout_sec
         self.orders_max_retries = orders_max_retries
         self.orders_backoff_base_sec = orders_backoff_base_sec
         self.orders_backoff_max_sec = orders_backoff_max_sec
         self.orders_request_delay_sec = orders_request_delay_sec
+        self.price_mapping_mode = price_mapping_mode
+        self.burst_gap_minutes = max(1, burst_gap_minutes)
+        self.max_event_bursts = max(1, max_event_bursts)
+        self.burst_buffer_minutes = max(0, burst_buffer_minutes)
         
         self._session = requests.Session()
         self._session.headers.update({
@@ -184,7 +196,12 @@ class PolymarketImpactAnalyzer:
                 logger.warning(f"Failed to load local token history {path}: {e}")
         return []
 
-    def _build_history_from_orders_api(self, token_id: str) -> List[PricePoint]:
+    def _build_history_from_orders_api(
+        self,
+        token_id: str,
+        min_timestamp: Optional[int] = None,
+        max_timestamp: Optional[int] = None,
+    ) -> List[PricePoint]:
         if not self.dome_bearer_token:
             logger.warning("DOME_BEARER_TOKEN missing; cannot fetch Dome orders history")
             return []
@@ -200,7 +217,11 @@ class PolymarketImpactAnalyzer:
                 api_url=self.dome_orders_url,
                 pages_dir=self.orders_pages_dir,
                 limit=self.orders_api_limit,
-                max_pages=self.orders_max_pages,
+                max_pages=(
+                    self.orders_fetch_all_max_pages
+                    if self.orders_fetch_all
+                    else self.orders_max_pages
+                ),
                 timeout=self.orders_timeout_sec,
                 pagination_key="",
                 api_key="",
@@ -211,6 +232,8 @@ class PolymarketImpactAnalyzer:
                 backoff_base_sec=self.orders_backoff_base_sec,
                 backoff_max_sec=self.orders_backoff_max_sec,
                 request_delay_sec=self.orders_request_delay_sec,
+                min_timestamp=min_timestamp,
+                max_timestamp=max_timestamp,
             )
             if not files:
                 return []
@@ -236,6 +259,7 @@ class PolymarketImpactAnalyzer:
                     "bars": len(bars),
                     "generated_by": "PolymarketImpactAnalyzer",
                     "source": "dome_orders_api",
+                    "orders_fetch_all": self.orders_fetch_all,
                 },
             }
             out_path = self._token_history_path(token_id)
@@ -253,6 +277,60 @@ class PolymarketImpactAnalyzer:
         except Exception as e:
             logger.warning(f"Orders API history build failed for token={token_id[:20]}...: {e}")
             return []
+
+    def _select_burst_event_windows(self, timestamps: List[int]) -> List[Tuple[int, int]]:
+        """
+        Select dense contiguous event windows based on timestamp gaps.
+        """
+        if not timestamps:
+            return []
+
+        sorted_ts = sorted(set(timestamps))
+        gap_sec = self.burst_gap_minutes * 60
+        clusters: List[List[int]] = []
+        current: List[int] = [sorted_ts[0]]
+
+        for ts in sorted_ts[1:]:
+            if ts - current[-1] <= gap_sec:
+                current.append(ts)
+            else:
+                clusters.append(current)
+                current = [ts]
+        clusters.append(current)
+
+        # Prefer denser clusters first, then tighter spans, then more recent clusters.
+        # This avoids selecting ancient singleton clusters when many clusters tie.
+        ranked = sorted(
+            clusters,
+            key=lambda c: (-len(c), (c[-1] - c[0]), -c[-1]),
+        )
+        selected = ranked[: self.max_event_bursts]
+        windows = [(c[0], c[-1]) for c in selected if c]
+        windows.sort(key=lambda x: x[0])
+        return windows
+
+    def _restrict_history_to_windows(
+        self,
+        history: List[PricePoint],
+        windows: List[Tuple[int, int]],
+    ) -> List[PricePoint]:
+        if not history or not windows:
+            return history
+
+        buffer_sec = self.burst_buffer_minutes * 60
+        intervals = [(start - buffer_sec, end + buffer_sec) for start, end in windows]
+
+        filtered: List[PricePoint] = []
+        for p in history:
+            for lo, hi in intervals:
+                if lo <= p.timestamp <= hi:
+                    filtered.append(p)
+                    break
+
+        # Ensure at least a tiny usable series survives.
+        if len(filtered) >= 2:
+            return filtered
+        return history
     
     def _setup_logging(self):
         """Configure structured logging."""
@@ -626,6 +704,7 @@ class PolymarketImpactAnalyzer:
         token_outcome: str = "Yes",
         enforce_market_window: bool = True,
         skip_out_of_window_events: bool = True,
+        explicit_tokens: Optional[List[Dict]] = None,
     ) -> List[EventImpact]:
         """
         Analyze price impact of all events in a belief graph.
@@ -657,8 +736,27 @@ class PolymarketImpactAnalyzer:
             "edge_count": len(graph_data.get("edges", []))
         })
         
-        # Step 2: Fetch tokens
-        tokens = self.fetch_event_tokens(slug)
+        # Step 2: Fetch/resolve tokens
+        tokens: List[MarketToken] = []
+        if explicit_tokens:
+            for t in explicit_tokens:
+                tid = str(t.get("token_id", "")).strip()
+                if not tid:
+                    continue
+                tokens.append(
+                    MarketToken(
+                        token_id=tid,
+                        question=str(t.get("question", "")),
+                        outcome=str(t.get("outcome", "unknown")),
+                        current_price=float(t.get("current_price", 0.5)),
+                        market_slug=slug,
+                    )
+                )
+            logger.info(
+                f"Using explicit token candidates from backtest metadata: {len(tokens)}"
+            )
+        if not tokens:
+            tokens = self.fetch_event_tokens(slug)
         if not tokens:
             logger.error("No tokens found for slug")
             return []
@@ -676,7 +774,9 @@ class PolymarketImpactAnalyzer:
 
         # Pre-parse event timestamps to score token history overlap.
         event_timestamps: List[int] = []
+        event_ts_by_id: Dict[str, int] = {}
         for node in nodes:
+            event_id = str(node.get("event_id", "") or "")
             ts = node.get("timestamp")
             if not ts:
                 continue
@@ -684,9 +784,49 @@ class PolymarketImpactAnalyzer:
                 dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=timezone.utc)
-                event_timestamps.append(int(dt.timestamp()))
+                event_ts = int(dt.timestamp())
+                event_timestamps.append(event_ts)
+                if event_id:
+                    event_ts_by_id[event_id] = event_ts
             except Exception:
                 continue
+
+        selected_event_windows: List[Tuple[int, int]] = []
+        selected_event_ids: Optional[set] = None
+        if self.price_mapping_mode == "burst_events":
+            selected_event_windows = self._select_burst_event_windows(event_timestamps)
+            if selected_event_windows:
+                selected_event_ids = set()
+                buffer_sec = self.burst_buffer_minutes * 60
+                for eid, ts in event_ts_by_id.items():
+                    for start, end in selected_event_windows:
+                        if (start - buffer_sec) <= ts <= (end + buffer_sec):
+                            selected_event_ids.add(eid)
+                            break
+                logger.info(
+                    "Step 1 burst selection: windows=%s selected_events=%s/%s gap_min=%s max_bursts=%s",
+                    len(selected_event_windows),
+                    len(selected_event_ids),
+                    len(nodes),
+                    self.burst_gap_minutes,
+                    self.max_event_bursts,
+                )
+                self._log_json(
+                    "burst_selection",
+                    {
+                        "windows": [
+                            {
+                                "start_ts": s,
+                                "end_ts": e,
+                                "start_iso": datetime.fromtimestamp(s, tz=timezone.utc).isoformat(),
+                                "end_iso": datetime.fromtimestamp(e, tz=timezone.utc).isoformat(),
+                            }
+                            for s, e in selected_event_windows
+                        ],
+                        "selected_event_count": len(selected_event_ids),
+                        "total_graph_events": len(nodes),
+                    },
+                )
 
         # Step 3: Fetch price history and select best token by overlap.
         target_token = None
@@ -705,6 +845,40 @@ class PolymarketImpactAnalyzer:
             min_ts = history[0].timestamp
             max_ts = history[-1].timestamp
             overlap_count = sum(1 for ts in event_timestamps if min_ts <= ts <= max_ts)
+
+            # If cached orders history is too narrow (zero overlap), try to refresh
+            # from Dome API once and re-score. This avoids stale short local caches
+            # making all events out_of_range.
+            if (
+                overlap_count == 0
+                and self.prefer_orders_history
+                and self.dome_bearer_token
+                and self._history_source_by_token.get(candidate.token_id) == "orders_local_cache"
+            ):
+                logger.info(
+                    "Step 3 token refresh: zero overlap on local cache, rebuilding from orders API "
+                    f"for token={candidate.token_id[:20]}..."
+                )
+                min_ts = None
+                max_ts = None
+                if selected_event_windows:
+                    buffer_sec = self.burst_buffer_minutes * 60
+                    min_ts = selected_event_windows[0][0] - buffer_sec
+                    max_ts = selected_event_windows[-1][1] + buffer_sec
+                refreshed = self._build_history_from_orders_api(
+                    candidate.token_id,
+                    min_timestamp=min_ts,
+                    max_timestamp=max_ts,
+                )
+                if refreshed:
+                    # update cache with refreshed history
+                    cache_key = f"{candidate.token_id}_max_{self.fidelity}"
+                    self._price_cache[cache_key] = refreshed
+                    history = refreshed
+                    min_ts = history[0].timestamp
+                    max_ts = history[-1].timestamp
+                    overlap_count = sum(1 for ts in event_timestamps if min_ts <= ts <= max_ts)
+
             score = (overlap_count, len(history), -i)
             logger.info(
                 f"Step 3 token score: token={candidate.token_id[:20]}... "
@@ -734,6 +908,14 @@ class PolymarketImpactAnalyzer:
             f"Step 3: Selected token '{target_token.outcome}' with "
             f"{len(price_history)} price points, overlap={self._last_selected_token_meta.get('overlap_events', 0)}"
         )
+        if selected_event_windows:
+            before_len = len(price_history)
+            price_history = self._restrict_history_to_windows(price_history, selected_event_windows)
+            logger.info(
+                "Step 3: Restricted history to selected windows: %s -> %s points",
+                before_len,
+                len(price_history),
+            )
         
         # Market lifetime window from available price history.
         market_start_ts = price_history[0].timestamp
@@ -753,6 +935,8 @@ class PolymarketImpactAnalyzer:
         
         for node in nodes:
             event_id = node.get("event_id", "")
+            if selected_event_ids is not None and event_id not in selected_event_ids:
+                continue
             event_type = node.get("event_type", "")
             timestamp_str = node.get("timestamp", "")
             raw_title = node.get("raw_title", node.get("action", "") + " " + node.get("object", ""))
