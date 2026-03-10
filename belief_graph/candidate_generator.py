@@ -10,6 +10,7 @@ Candidate edges (A → B) are generated if:
 """
 
 import logging
+from datetime import timezone as _tz
 from typing import Dict, List, Set, Tuple
 
 from belief_graph.models import EventNode, BeliefNode, EventType
@@ -87,10 +88,16 @@ def generate_candidates(
     
     candidates: List[Tuple[str, str]] = []
     
-    # Sort events by timestamp
+    def _utc(ts):
+        """Normalize datetime to UTC-aware for safe comparison."""
+        if ts is None:
+            return None
+        return ts if ts.tzinfo is not None else ts.replace(tzinfo=_tz.utc)
+
+    # Sort events by timestamp (normalize tz to avoid naive vs aware crash)
     sorted_events = sorted(
         [e for e in events if e.timestamp is not None],
-        key=lambda e: e.timestamp
+        key=lambda e: _utc(e.timestamp)
     )
     
     logger.debug(f"Sorted {len(sorted_events)} events by timestamp")
@@ -114,7 +121,7 @@ def generate_candidates(
                     break
         
         # Check against belief node
-        if belief.resolution_time and event_a.timestamp < belief.resolution_time:
+        if belief.resolution_time and _utc(event_a.timestamp) < _utc(belief.resolution_time):
             if can_influence(event_a.event_type, "belief"):
                 candidates.append((event_a.event_id, belief.belief_id))
                 event_count += 1
@@ -186,7 +193,7 @@ def generate_candidates_with_metadata(
             to_type = "belief"
             time_diff = None
             if belief.resolution_time and from_event.timestamp:
-                time_diff = (belief.resolution_time - from_event.timestamp).total_seconds()
+                time_diff = (_utc(belief.resolution_time) - _utc(from_event.timestamp)).total_seconds()
         else:
             to_event = event_lookup.get(to_id)
             if not to_event:
@@ -194,7 +201,7 @@ def generate_candidates_with_metadata(
             to_type = to_event.event_type
             time_diff = None
             if to_event.timestamp and from_event.timestamp:
-                time_diff = (to_event.timestamp - from_event.timestamp).total_seconds()
+                time_diff = (_utc(to_event.timestamp) - _utc(from_event.timestamp)).total_seconds()
         
         candidates_with_meta.append({
             "from_event_id": from_id,
@@ -244,12 +251,12 @@ def filter_candidates_by_time_window(
             if not belief.resolution_time:
                 filtered.append((from_id, to_id))
                 continue
-            diff = (belief.resolution_time - from_event.timestamp).total_seconds()
+            diff = (_utc(belief.resolution_time) - _utc(from_event.timestamp)).total_seconds()
         else:
             to_event = events.get(to_id)
             if not to_event or not to_event.timestamp:
                 continue
-            diff = (to_event.timestamp - from_event.timestamp).total_seconds()
+            diff = (_utc(to_event.timestamp) - _utc(from_event.timestamp)).total_seconds()
         
         if min_seconds <= diff <= max_seconds:
             filtered.append((from_id, to_id))

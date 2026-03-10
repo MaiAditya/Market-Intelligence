@@ -222,6 +222,7 @@ def cmd_build_graph(args):
             market_window_only=args.market_window_only,
             window_start=parsed_start,
             window_end=parsed_end,
+            cluster_only=getattr(args, 'cluster_only', False),
         )
         
         # Save
@@ -587,6 +588,11 @@ Examples:
     build_graph_parser.add_argument(
         "-o", "--output",
         help="Output file for graph (JSON)"
+    )
+    build_graph_parser.add_argument(
+        "--cluster-only",
+        action="store_true",
+        help="Only run clustering and save clusters, skip edge generation"
     )
     build_graph_parser.set_defaults(func=cmd_build_graph)
     

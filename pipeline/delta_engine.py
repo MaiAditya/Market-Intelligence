@@ -189,14 +189,10 @@ class DeltaEngine:
         self.normalizer = normalizer
         
         if signal_extractor is None:
-            signal_extractor = SignalExtractor(self.registry, self.normalizer)
+            signal_extractor = SignalExtractor(self.registry, self.normalizer, self.mapper)
         self.signal_extractor = signal_extractor
         
-        if output_dir is None:
-            project_root_path = Path(__file__).parent.parent
-            output_dir = project_root_path / "data" / "output"
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir = None
         logger.info("DeltaEngine initialized")
     
     def _calculate_time_weight(
@@ -347,6 +343,10 @@ class DeltaEngine:
         ranked = []
         seen_urls = set()
         
+        # Load all normalized docs once from DB
+        all_docs = self.normalizer.load_all_for_event(event.event_id)
+        doc_lookup = {d.doc_id: d for d in all_docs}
+        
         for signal in signals:
             # Skip duplicates
             if signal.source_url in seen_urls:
@@ -354,7 +354,7 @@ class DeltaEngine:
             seen_urls.add(signal.source_url)
             
             # Load document
-            doc = self.normalizer.load(signal.doc_id)
+            doc = doc_lookup.get(signal.doc_id)
             if doc is None:
                 continue
             
@@ -489,19 +489,15 @@ class DeltaEngine:
         return analysis
     
     def save_analysis(self, analysis: EventAnalysis) -> None:
-        """Save analysis to disk."""
-        from utils.json_utils import dump_json
-        output_path = self.output_dir / f"{analysis.event_id}_analysis.json"
-        with open(output_path, 'w', encoding='utf-8') as f:
-            dump_json(analysis.to_dict(), f)
-        logger.info(f"Saved analysis to {output_path}")
+        """Save analysis to PostgreSQL."""
+        from utils.db_storage import save_artifact
+        save_artifact(analysis.event_id, "delta_analysis", analysis.to_dict())
+        logger.info(f"Saved analysis to db for {analysis.event_id}")
     
     def load_analysis(self, event_id: str) -> Optional[EventAnalysis]:
-        """Load saved analysis from disk."""
-        output_path = self.output_dir / f"{event_id}_analysis.json"
-        if not output_path.exists():
+        """Load saved analysis from PostgreSQL."""
+        from utils.db_storage import load_artifact
+        data = load_artifact(event_id, "delta_analysis")
+        if not data:
             return None
-        
-        with open(output_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            return EventAnalysis.from_dict(data)
+        return EventAnalysis.from_dict(data)

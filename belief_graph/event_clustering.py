@@ -67,7 +67,62 @@ class ClusteredEvent:
     
     # Number of sources
     num_sources: int = 1
-    
+
+    # Combined summary of all member articles (set by generate_summaries())
+    combined_summary: str = ""
+
+    # Per-article summaries (set by generate_summaries())
+    article_summaries: List[str] = field(default_factory=list)
+
+    @staticmethod
+    def _heuristic_summary(raw_text: str, title: Optional[str] = None, max_sentences: int = 3) -> str:
+        """Extract first N non-trivial sentences from raw_text as a summary."""
+        import re
+        stopwords = {"the", "and", "for", "are", "was", "will", "its", "but",
+                     "this", "that", "with", "have", "had", "not", "how", "can"}
+        text = re.sub(r'\s+', ' ', (raw_text or "")).strip()
+        if title and not text.startswith(title[:20]):
+            text = f"{title.strip()}. {text}"
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        good = [s.strip() for s in sentences if len(s.split()) >= 7
+                and not all(w.lower() in stopwords for w in s.split())]
+        summary = " ".join(good[:max_sentences])
+        return summary[:600] if summary else text[:300]
+
+    def generate_summaries(self, data_dir: str) -> None:
+        """
+        Load raw_text for each member doc, generate per-article heuristic summaries,
+        and build combined_summary = ' | '.join(all article summaries).
+
+        Called by graph_builder after clustering, before saving _clusters.json.
+        """
+        import json as _json
+        from pathlib import Path as _Path
+
+        norm_dir = _Path(data_dir) / "normalized"
+        summaries: List[str] = []
+
+        for doc_id in self.source_doc_ids:
+            norm_file = norm_dir / f"{doc_id}.json"
+            if not norm_file.exists():
+                continue
+            try:
+                doc = _json.loads(norm_file.read_text())
+                raw_text = doc.get("raw_text") or ""
+                title = doc.get("title") or getattr(self.canonical_event, 'raw_title', None)
+                if raw_text and len(raw_text.split()) >= 10:
+                    s = self._heuristic_summary(raw_text, title=title)
+                    if s:
+                        summaries.append(s)
+            except Exception:
+                pass
+
+        self.article_summaries = summaries
+        self.combined_summary = " | ".join(summaries) if summaries else (
+            getattr(self.canonical_event, 'raw_title', '') or
+            getattr(self.canonical_event, 'action', '') or ""
+        )
+
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
         return {
@@ -79,6 +134,8 @@ class ClusteredEvent:
             "cluster_confidence": self.cluster_confidence,
             "avg_similarity": self.avg_similarity,
             "num_sources": self.num_sources,
+            "combined_summary": self.combined_summary,
+            "article_summaries": self.article_summaries,
         }
 
 
@@ -516,10 +573,17 @@ class EventClusterer:
             else:
                 credibility = 0.5
             
-            # Timestamp (prefer more recent)
-            timestamp = event.timestamp if event.timestamp else datetime.min
+            # Timestamp (prefer more recent) — normalize to UTC-aware to avoid
+            # TypeError when mixing offset-naive and offset-aware datetimes
+            from datetime import timezone as _tz
+            ts = event.timestamp if event.timestamp else datetime.min
+            if ts != datetime.min:
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=_tz.utc)
+            else:
+                ts = datetime.min.replace(tzinfo=_tz.utc)
             
-            return (entity_count, credibility, timestamp)
+            return (entity_count, credibility, ts)
         
         # Sort by score (descending)
         scored = [(idx, score_event(idx)) for idx in indices]
@@ -564,7 +628,7 @@ class EventClusterer:
         # Start from the canonical selection (best source / quality)
         base, _ = self._select_canonical_event(events, cluster_indices)
 
-        # --- Consensus timestamp (mode-day, tie-break median) ---
+        # --- Earliest timestamp ---
         timestamps = [
             events[i].timestamp
             for i in cluster_indices
@@ -572,13 +636,11 @@ class EventClusterer:
         ]
         consensus_ts = base.timestamp
         if timestamps:
-            # Find mode day
-            day_counts = Counter(ts.date() for ts in timestamps)
-            mode_day = day_counts.most_common(1)[0][0]
-            same_day = [ts for ts in timestamps if ts.date() == mode_day]
-            # Median of timestamps on the mode day
-            same_day.sort()
-            consensus_ts = same_day[len(same_day) // 2]
+            from datetime import timezone as _tz
+            def _utc(t):
+                return t.replace(tzinfo=_tz.utc) if t.tzinfo is None else t
+            timestamps.sort(key=_utc)
+            consensus_ts = timestamps[0]
 
         # --- Union of actors ---
         all_actors: Set[str] = set()

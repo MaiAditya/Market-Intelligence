@@ -16,7 +16,6 @@ Core pipeline components for the AI Market Intelligence system:
 from .event_registry import EventRegistry, Event, get_registry
 from .query_generator import QueryGenerator, GeneratedQuery
 from .normalizer import DocumentNormalizer, NormalizedDocument
-from .entity_extractor import EntityExtractor
 from .event_mapper import EventMapper, DocumentMapping
 from .signal_extractor import SignalExtractor, Signal
 from .time_extractor import TimeExtractor, NumericExtractor
@@ -30,7 +29,6 @@ __all__ = [
     "GeneratedQuery",
     "DocumentNormalizer",
     "NormalizedDocument",
-    "EntityExtractor",
     "EventMapper",
     "DocumentMapping",
     "SignalExtractor",

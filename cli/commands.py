@@ -20,7 +20,6 @@ from pipeline.event_registry import get_registry, Event
 from pipeline.query_generator import QueryGenerator, generate_queries_for_all_events
 from pipeline.ingestion import DataIngestor
 from pipeline.normalizer import DocumentNormalizer
-from pipeline.entity_extractor import EntityExtractor
 from pipeline.event_mapper import EventMapper
 from pipeline.signal_extractor import SignalExtractor
 from pipeline.delta_engine import DeltaEngine, EventAnalysis
@@ -53,9 +52,17 @@ class PipelineOrchestrator:
         logger.info(f"Loaded {len(self.registry)} events from registry")
         
         self.query_generator = QueryGenerator()
+        # Try to initialise LLM query generator (optional, falls back to template)
+        self._llm_query_gen = None
+        try:
+            from pipeline.llm_query_generator import LLMQueryGenerator
+            self._llm_query_gen = LLMQueryGenerator.from_env()
+            logger.info("LLM query generator ready")
+        except Exception as e:
+            logger.info(f"LLM query generator unavailable ({e}), using template-based")
+        
         self.ingestor = DataIngestor()
         self.normalizer = DocumentNormalizer()
-        self.entity_extractor = EntityExtractor(self.normalizer)
         self.mapper = EventMapper(self.registry, self.normalizer)
         self.signal_extractor = SignalExtractor(self.registry, self.normalizer, self.mapper)
         self.delta_engine = DeltaEngine(
@@ -125,15 +132,46 @@ class PipelineOrchestrator:
         """Process a single event through the pipeline."""
         logger.info(f"Processing event: {event.event_id}")
         
-        # Step 1: Generate queries
+        # Step 1: Generate queries (try LLM first, fall back to template)
         logger.info(f"[{event.event_id}] Step 1/6: Generating queries...")
         if verbose:
             print("  [1/6] Generating queries...")
-        query_set = self.query_generator.generate_queries_for_event(event)
-        queries = [{"query": q.query, "query_type": q.query_type} for q in query_set.queries]
-        logger.info(f"[{event.event_id}] Generated {len(queries)} queries")
-        if verbose:
-            print(f"        Generated {len(queries)} queries")
+        
+        queries = []
+        if self._llm_query_gen:
+            try:
+                # Load event config for description
+                import json as _json
+                from pathlib import Path as _Path
+                events_json = _Path(__file__).parent.parent / "config" / "events.json"
+                event_cfg = {}
+                if events_json.exists():
+                    all_events = _json.load(open(events_json)).get("events", [])
+                    event_cfg = next((e for e in all_events if e["event_id"] == event.event_id), {})
+                
+                llm_queries = self._llm_query_gen.generate_for_event_config(
+                    event_cfg if event_cfg else {
+                        "event_id": event.event_id,
+                        "event_title": event.event_title,
+                        "event_type": event.event_type,
+                    },
+                    num_queries=12,
+                )
+                if llm_queries:
+                    queries = [{"query": q, "query_type": "llm_generated"} for q in llm_queries]
+                    logger.info(f"[{event.event_id}] LLM generated {len(queries)} queries")
+                    if verbose:
+                        print(f"        LLM generated {len(queries)} queries")
+            except Exception as e:
+                logger.warning(f"[{event.event_id}] LLM query gen failed: {e}")
+        
+        # Fallback to template-based queries
+        if not queries:
+            query_set = self.query_generator.generate_queries_for_event(event)
+            queries = [{"query": q.query, "query_type": q.query_type} for q in query_set.queries]
+            logger.info(f"[{event.event_id}] Template generated {len(queries)} queries")
+            if verbose:
+                print(f"        Template generated {len(queries)} queries")
         
         # Step 2: Ingest data
         if not skip_ingestion:
@@ -167,9 +205,7 @@ class PipelineOrchestrator:
                 logger.info(f"[{event.event_id}] Step 3/6: No cached normalized docs, normalizing...")
                 if verbose:
                     print("  [3/6] No cache found, normalizing documents...")
-                for doc in docs:
-                    norm = self.normalizer.normalize_and_save(doc.to_dict())
-                    normalized.append(norm)
+                normalized = self.normalizer.normalize_batch(event.event_id, [doc.to_dict() for doc in docs])
                 logger.info(f"[{event.event_id}] Normalized {len(normalized)} documents")
                 if verbose:
                     print(f"        Normalized {len(normalized)} documents")
@@ -177,43 +213,24 @@ class PipelineOrchestrator:
             logger.info(f"[{event.event_id}] Step 3/6: Normalizing documents...")
             if verbose:
                 print("  [3/6] Normalizing documents...")
-            for doc in docs:
-                norm = self.normalizer.normalize_and_save(doc.to_dict())
-                normalized.append(norm)
+            normalized = self.normalizer.normalize_batch(event.event_id, [doc.to_dict() for doc in docs])
             logger.info(f"[{event.event_id}] Normalized {len(normalized)} documents")
             if verbose:
                 print(f"        Normalized {len(normalized)} documents")
         
-        # Step 4: Extract entities
-        needs_entity_extraction = any(not doc.extracted_entities for doc in normalized)
-        if skip_ingestion and normalized and not needs_entity_extraction:
-            logger.info(
-                f"[{event.event_id}] Step 4/6: Skipping entity extraction "
-                "(cached entities already present)"
-            )
-            if verbose:
-                print("  [4/6] Skipping entity extraction (cache hit)")
-            updated_docs = []
-        else:
-            logger.info(f"[{event.event_id}] Step 4/6: Extracting entities...")
-            if verbose:
-                print("  [4/6] Extracting entities...")
-            updated_docs = self.entity_extractor.process_event_documents(event.event_id)
-            logger.info(f"[{event.event_id}] Extracted entities from {len(updated_docs)} documents")
-        
-        # Step 5: Map documents to event
-        logger.info(f"[{event.event_id}] Step 5/6: Mapping documents to event...")
+        # Step 4: Map documents to event (Skipped Entity Extraction)
+        logger.info(f"[{event.event_id}] Step 4/5: Mapping documents to event...")
         if verbose:
-            print("  [5/6] Mapping documents to event...")
+            print("  [4/5] Mapping documents to event...")
         mapping_summary = self.mapper.process_event(event.event_id)
         logger.info(f"[{event.event_id}] Mapping complete: {mapping_summary['relevant_documents']}/{mapping_summary['total_documents']} relevant")
         if verbose:
             print(f"        {mapping_summary['relevant_documents']}/{mapping_summary['total_documents']} relevant")
         
-        # Step 6: Extract signals and calculate delta
-        logger.info(f"[{event.event_id}] Step 6/6: Extracting signals and calculating delta...")
+        # Step 5: Extract signals and calculate delta
+        logger.info(f"[{event.event_id}] Step 5/5: Extracting signals and calculating delta...")
         if verbose:
-            print("  [6/6] Extracting signals and calculating delta...")
+            print("  [5/5] Extracting signals and calculating delta...")
         analysis = self.delta_engine.analyze_event(event.event_id)
         logger.info(f"[{event.event_id}] Analysis complete: delta={analysis.suggested_delta}, confidence={analysis.confidence}")
         

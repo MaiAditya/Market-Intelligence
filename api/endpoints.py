@@ -478,9 +478,24 @@ async def get_stats():
     normalizer = DocumentNormalizer()
     
     ingestion_stats = ingestor.get_stats()
-    normalized_count = len(list(normalizer.normalized_dir.glob("*.json")))
+    normalized_count = 0
     
-    logger.info(f"Stats: {ingestion_stats['total_documents']} raw, {normalized_count} normalized")
+    # Query database for all normalized document artifacts
+    try:
+        from utils.db_storage import list_artifacts
+        
+        registry = get_registry()
+        for event in registry:
+            # list_artifacts returns a list of PipelineArtifact models
+            # but load_artifact returns the actual data dict/list
+            from utils.db_storage import load_artifact
+            data = load_artifact(event.event_id, "normalized_documents")
+            if data:
+                normalized_count += len(data)
+    except Exception as e:
+        logger.warning(f"Error counting normalized documents in db: {e}")
+    
+    logger.info(f"Stats: {ingestion_stats.get('total_documents', 0)} raw, {normalized_count} normalized")
     
     return StatsResponse(
         total_documents=ingestion_stats.get("total_documents", 0),

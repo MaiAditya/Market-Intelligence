@@ -120,6 +120,8 @@ def generate_report(
     top_n2: int,
     min_conf: float,
     impact_window: int,
+    before_window_minutes: Optional[int] = None,
+    after_window_minutes: Optional[int] = None,
     price_history_source: str = "clob",
     dome_bearer_token: Optional[str] = None,
     orders_max_pages: int = 30,
@@ -162,6 +164,8 @@ def generate_report(
         prefer_orders = price_history_source in {"orders", "auto"}
         analyzer = PolymarketImpactAnalyzer(
             window_minutes=impact_window,
+            before_window_minutes=before_window_minutes,
+            after_window_minutes=after_window_minutes,
             prefer_orders_history=prefer_orders,
             orders_only=orders_only or price_history_source == "orders",
             dome_bearer_token=dome_bearer_token,
@@ -174,12 +178,9 @@ def generate_report(
             max_event_bursts=max_event_bursts,
             burst_buffer_minutes=burst_buffer_minutes,
         )
-        resolved_graph_path = graph_path or str(
-            project_root / "data" / "belief_graphs" / f"{event_id}_graph.json"
-        )
         impacts = analyzer.analyze_belief_graph(
-            resolved_graph_path,
-            market_slug,
+            slug=market_slug,
+            graph_data=graph.to_dict(),
             enforce_market_window=True,
             skip_out_of_window_events=skip_out_of_window_events,
             explicit_tokens=explicit_token_candidates,
@@ -231,10 +232,17 @@ def generate_report(
         "focused_graph": focused_enriched,
     }
 
-    out = output_path or str(project_root / "data" / "output" / f"{event_id}_market_report.json")
+    out_dir = project_root / "data" / "output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = output_path or str(out_dir / f"{event_id}_market_report.json")
     with open(out, "w", encoding="utf-8") as f:
         dump_json(report, f)
-    logger.info(f"Report written to {out}")
+    logger.info(f"Report optionally backed up to {out}")
+    
+    # Save the pipeline artifact to postgres
+    from utils.db_storage import save_artifact
+    save_artifact(event_id, "market_report", report)
+    logger.info(f"Report saved to Postgres pipeline_artifacts for {event_id}")
     return report
 
 
@@ -247,7 +255,9 @@ def main():
     parser.add_argument("--top-n1", type=int, default=15, help="Top N-1 nodes")
     parser.add_argument("--top-n2", type=int, default=5, help="Top N-2 per N-1")
     parser.add_argument("--min-conf", type=float, default=0.3, help="Minimum confidence for N-1/N-2")
-    parser.add_argument("--impact-window", type=int, default=2, help="Impact window (minutes)")
+    parser.add_argument("--impact-window", type=int, default=60, help="Impact window (minutes), used as fallback if before/after not set")
+    parser.add_argument("--before-window", type=int, default=120, help="Minutes BEFORE event for price impact (default: 120 = 2h)")
+    parser.add_argument("--after-window", type=int, default=360, help="Minutes AFTER event for price impact (default: 360 = 6h)")
     parser.add_argument(
         "--price-history-source",
         choices=["clob", "orders", "auto"],
@@ -315,6 +325,8 @@ def main():
         top_n2=args.top_n2,
         min_conf=args.min_conf,
         impact_window=args.impact_window,
+        before_window_minutes=args.before_window,
+        after_window_minutes=args.after_window,
         price_history_source=args.price_history_source,
         dome_bearer_token=args.dome_bearer_token,
         dome_bearer_token_source=args.dome_bearer_token_source,

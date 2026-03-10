@@ -88,6 +88,8 @@ class PolymarketImpactAnalyzer:
     def __init__(
         self,
         window_minutes: int = 2,
+        before_window_minutes: Optional[int] = None,
+        after_window_minutes: Optional[int] = None,
         fallback_window_minutes: int = 60,
         fidelity: int = 1,
         output_dir: Optional[Path] = None,
@@ -114,13 +116,17 @@ class PolymarketImpactAnalyzer:
     ):
         """
         Args:
-            window_minutes: ±minutes around event to measure impact
+            window_minutes: ±minutes around event to measure impact (used when before/after not set)
+            before_window_minutes: Minutes BEFORE event to look for price (default: window_minutes)
+            after_window_minutes: Minutes AFTER event to look for price (default: window_minutes)
             fallback_window_minutes: Wider matching window used when strict window fails
             fidelity: Price history granularity in minutes
             output_dir: Directory for output files
             timeout: HTTP request timeout
         """
         self.window_minutes = window_minutes
+        self.before_window_minutes = before_window_minutes or window_minutes
+        self.after_window_minutes = after_window_minutes or window_minutes
         self.fallback_window_minutes = max(window_minutes, fallback_window_minutes)
         self.fidelity = fidelity
         self.output_dir = Path(output_dir or "data/impact_analysis")
@@ -543,10 +549,14 @@ class PolymarketImpactAnalyzer:
         window_minutes: Optional[int] = None
     ) -> dict:
         """
-        Calculate price impact around an event timestamp.
+        Calculate price impact around an event timestamp using windowed sampling.
         
-        Finds the closest price points before and after the event within
-        the ±window and calculates the delta.
+        Samples the price at two points:
+          - price_before = closest price to (event_time − before_window)
+          - price_after  = closest price to (event_time + after_window)
+        
+        This captures the full price movement around the event, not just
+        micro-movements at the exact event timestamp.
         
         Args:
             price_history: Sorted list of PricePoints
@@ -556,7 +566,9 @@ class PolymarketImpactAnalyzer:
         Returns:
             Dict with price_before, price_after, delta, pct_change, data_quality
         """
-        window = window_minutes or self.window_minutes
+        # Support asymmetric windows: before_window and after_window
+        before_window = window_minutes or self.before_window_minutes
+        after_window = window_minutes or self.after_window_minutes
         
         if not price_history:
             return {
@@ -575,92 +587,57 @@ class PolymarketImpactAnalyzer:
         else:
             event_ts = int(event_timestamp.timestamp())
         
-        window_seconds = window * 60
-        fallback_seconds = self.fallback_window_minutes * 60
+        before_window_seconds = before_window * 60
+        after_window_seconds = after_window * 60
+
+        # Target timestamps: sample AWAY from the event by the window amount
+        target_before_ts = event_ts - before_window_seconds  # e.g., event - 1 day
+        target_after_ts = event_ts + after_window_seconds    # e.g., event + 1 day
 
         # Extract timestamps for binary search
         timestamps = [p.timestamp for p in price_history]
         min_ts = timestamps[0]
         max_ts = timestamps[-1]
 
-        # If event is outside available history, report explicitly.
-        if event_ts < min_ts or event_ts > max_ts:
-            return {
-                "price_before": None,
-                "price_after": None,
-                "delta": None,
-                "pct_change": None,
-                "data_quality": "out_of_range",
-                "before_offset_seconds": None,
-                "after_offset_seconds": None
-            }
-        
-        # Find closest point BEFORE event (within window)
-        idx_before = bisect_right(timestamps, event_ts) - 1
+        # ── Find closest price to target_before_ts ──
         price_before = None
         before_offset = None
-        
-        if idx_before >= 0:
-            offset = event_ts - timestamps[idx_before]
-            if offset <= window_seconds:
-                price_before = price_history[idx_before].price
-                before_offset = offset
-        
-        # Find closest point AFTER event (within window)
-        idx_after = bisect_left(timestamps, event_ts)
+        idx_b = bisect_left(timestamps, target_before_ts)
+        # Check both idx_b and idx_b-1 to find the closest
+        candidates_b = []
+        if idx_b < len(timestamps):
+            candidates_b.append(idx_b)
+        if idx_b > 0:
+            candidates_b.append(idx_b - 1)
+        if candidates_b:
+            best_idx = min(candidates_b, key=lambda i: abs(timestamps[i] - target_before_ts))
+            price_before = price_history[best_idx].price
+            before_offset = abs(timestamps[best_idx] - target_before_ts)
+
+        # ── Find closest price to target_after_ts ──
         price_after = None
         after_offset = None
+        idx_a = bisect_left(timestamps, target_after_ts)
+        candidates_a = []
+        if idx_a < len(timestamps):
+            candidates_a.append(idx_a)
+        if idx_a > 0:
+            candidates_a.append(idx_a - 1)
+        if candidates_a:
+            best_idx = min(candidates_a, key=lambda i: abs(timestamps[i] - target_after_ts))
+            price_after = price_history[best_idx].price
+            after_offset = abs(timestamps[best_idx] - target_after_ts)
+
+        # If target_after_ts is beyond available history, use the last available price
+        if price_after is None and timestamps:
+            price_after = price_history[-1].price
+            after_offset = abs(max_ts - target_after_ts)
         
-        if idx_after < len(timestamps):
-            offset = timestamps[idx_after] - event_ts
-            if offset <= window_seconds:
-                price_after = price_history[idx_after].price
-                after_offset = offset
+        # If target_before_ts is before available history, use the first available price
+        if price_before is None and timestamps:
+            price_before = price_history[0].price
+            before_offset = abs(min_ts - target_before_ts)
 
-        # Fallback: if strict window misses one side, try wider window.
-        if price_before is None and idx_before >= 0:
-            offset = event_ts - timestamps[idx_before]
-            if offset <= fallback_seconds:
-                price_before = price_history[idx_before].price
-                before_offset = offset
-
-        if price_after is None and idx_after < len(timestamps):
-            offset = timestamps[idx_after] - event_ts
-            if offset <= fallback_seconds:
-                price_after = price_history[idx_after].price
-                after_offset = offset
-
-        # Adaptive widening if both sides still missing. This helps sparse-order
-        # histories where minute bars are intermittent.
-        if price_before is None and price_after is None:
-            adaptive_windows = [max(window * 5, 10), 30, 60, 120, 360, 720]
-            seen = set()
-            for w in adaptive_windows:
-                if w in seen:
-                    continue
-                seen.add(w)
-                bound = w * 60
-                test_before = None
-                test_before_offset = None
-                if idx_before >= 0:
-                    off = event_ts - timestamps[idx_before]
-                    if off <= bound:
-                        test_before = price_history[idx_before].price
-                        test_before_offset = off
-                test_after = None
-                test_after_offset = None
-                if idx_after < len(timestamps):
-                    off = timestamps[idx_after] - event_ts
-                    if off <= bound:
-                        test_after = price_history[idx_after].price
-                        test_after_offset = off
-                if test_before is not None and test_after is not None:
-                    price_before = test_before
-                    before_offset = test_before_offset
-                    price_after = test_after
-                    after_offset = test_after_offset
-                    break
-        
         # Calculate delta
         delta = None
         pct_change = None
@@ -668,20 +645,22 @@ class PolymarketImpactAnalyzer:
         
         if price_before is not None and price_after is not None:
             delta = round(price_after - price_before, 6)
-            if price_before > 0:
-                pct_change = round((delta / price_before) * 100, 4)
+            # Absolute percentage points: since prices are 0-1 probabilities,
+            # (pa - pb) * 100 gives the percentage point shift
+            pct_change = round(delta * 100, 2)
             
-            # Determine quality
-            if before_offset <= 60 and after_offset <= 60:
+            # Determine quality based on how close we got to the target timestamps
+            max_offset = max(before_offset or 0, after_offset or 0)
+            if max_offset <= 600:          # Within 10 minutes of target
                 data_quality = "exact"
-            elif before_offset <= window_seconds and after_offset <= window_seconds:
+            elif max_offset <= 3600:       # Within 1 hour of target
                 data_quality = "interpolated"
-            elif before_offset <= fallback_seconds and after_offset <= fallback_seconds:
+            elif max_offset <= 86400:      # Within 1 day of target
                 data_quality = "widened_window"
             else:
-                data_quality = "adaptive_window"
+                data_quality = "nearest_available"
         elif price_before is not None or price_after is not None:
-            data_quality = "missing"
+            data_quality = "partial"
         
         return {
             "price_before": price_before,
@@ -699,8 +678,9 @@ class PolymarketImpactAnalyzer:
     
     def analyze_belief_graph(
         self,
-        graph_path: str,
         slug: str,
+        graph_data: Optional[Dict] = None,
+        graph_path: Optional[str] = None,
         token_outcome: str = "Yes",
         enforce_market_window: bool = True,
         skip_out_of_window_events: bool = True,
@@ -710,8 +690,9 @@ class PolymarketImpactAnalyzer:
         Analyze price impact of all events in a belief graph.
         
         Args:
-            graph_path: Path to belief graph JSON
             slug: Polymarket event slug
+            graph_data: Belief graph JSON dictionary
+            graph_path: Path to belief graph JSON (legacy)
             token_outcome: Which outcome token to analyze ("Yes" or "No")
             enforce_market_window: If True, only score events within market
                 lifetime inferred from price history.
@@ -720,18 +701,22 @@ class PolymarketImpactAnalyzer:
             List of EventImpact measurements
         """
         logger.info(f"═══ Starting Impact Analysis ═══")
-        logger.info(f"Graph: {graph_path}")
         logger.info(f"Slug: {slug}")
         
         # Step 1: Load belief graph
-        with open(graph_path, 'r') as f:
-            graph_data = json.load(f)
+        if graph_data is None:
+            if graph_path:
+                logger.info(f"Graph Path: {graph_path}")
+                with open(graph_path, 'r') as f:
+                    graph_data = json.load(f)
+            else:
+                raise ValueError("Must provide either graph_data or graph_path")
         
         nodes = graph_data.get("nodes", [])
         logger.info(f"Step 1: Loaded {len(nodes)} event nodes from belief graph")
         
         self._log_json("graph_loaded", {
-            "path": str(graph_path),
+            "path": str(graph_path) if graph_path else "memory",
             "node_count": len(nodes),
             "edge_count": len(graph_data.get("edges", []))
         })

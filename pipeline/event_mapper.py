@@ -157,36 +157,28 @@ class EntityGate:
         """
         logger.debug(f"Entity gate check for doc {doc.doc_id} against event {event.event_id}")
         
-        # Get document entities (case-insensitive)
-        doc_entities = set()
-        for entity in doc.extracted_entities:
-            entity_text = entity.get("text", "").lower()
-            doc_entities.add(entity_text)
-            # Also add without spaces/hyphens for flexible matching
-            doc_entities.add(entity_text.replace("-", "").replace(" ", ""))
-        
-        # Also check raw text for entity presence
+        # Get document text
         doc_text_lower = doc.raw_text.lower()
         
         # Check primary entities
         primary_matches = []
         for entity in event.primary_entities:
             entity_lower = entity.lower()
-            if entity_lower in doc_entities or entity_lower in doc_text_lower:
+            if entity_lower in doc_text_lower:
                 primary_matches.append(entity)
         
         # Check secondary entities
         secondary_matches = []
         for entity in event.secondary_entities:
             entity_lower = entity.lower()
-            if entity_lower in doc_entities or entity_lower in doc_text_lower:
+            if entity_lower in doc_text_lower:
                 secondary_matches.append(entity)
         
         # Check aliases
         alias_matches = []
         for alias in event.aliases:
             alias_lower = alias.lower()
-            if alias_lower in doc_entities or alias_lower in doc_text_lower:
+            if alias_lower in doc_text_lower:
                 alias_matches.append(alias)
         
         # Pass if: at least 1 primary AND (at least 1 secondary OR alias)
@@ -271,10 +263,7 @@ class EventMapper:
         self.registry = registry or get_registry()
         self.normalizer = normalizer or DocumentNormalizer()
         
-        if output_dir is None:
-            project_root = Path(__file__).parent.parent
-            output_dir = project_root / "data" / "normalized"
-        self.output_dir = Path(output_dir)
+        self.output_dir = None
         
         # Initialize components
         self.entity_gate = EntityGate()
@@ -451,9 +440,13 @@ class EventMapper:
 
         mappings: List[DocumentMapping] = []
         if prefer_saved_mappings:
+            from utils.db_storage import load_artifact
+            existing_data = load_artifact(event.event_id, "document_mappings") or []
+            existing_mappings = {d["doc_id"]: DocumentMapping.from_dict(d) for d in existing_data}
+            
             missing_docs: List[NormalizedDocument] = []
             for doc in documents:
-                mapping = self.load_mapping(doc.doc_id)
+                mapping = existing_mappings.get(doc.doc_id)
                 if mapping is not None and mapping.event_id == event.event_id:
                     mappings.append(mapping)
                 else:
@@ -494,21 +487,12 @@ class EventMapper:
         return relevant
     
     def save_mapping(self, mapping: DocumentMapping) -> None:
-        """Save a mapping result to disk."""
-        from utils.json_utils import dump_json
-        mapping_path = self.output_dir / f"{mapping.doc_id}_mapping.json"
-        with open(mapping_path, 'w', encoding='utf-8') as f:
-            dump_json(mapping.to_dict(), f)
+        """Deprecated."""
+        pass
     
     def load_mapping(self, doc_id: str) -> Optional[DocumentMapping]:
-        """Load a mapping result from disk."""
-        mapping_path = self.output_dir / f"{doc_id}_mapping.json"
-        if not mapping_path.exists():
-            return None
-        
-        with open(mapping_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            return DocumentMapping.from_dict(data)
+        """Deprecated."""
+        return None
     
     def process_event(
         self,
@@ -544,14 +528,14 @@ class EventMapper:
                 save_mappings=save_mappings
             )
         else:
-            # Legacy sequential processing
             mappings = []
             for doc in documents:
                 mapping = self.map_document_to_event(doc, event)
                 mappings.append(mapping)
                 
-                if save_mappings:
-                    self.save_mapping(mapping)
+            if save_mappings and mappings:
+                from utils.db_storage import save_artifact, load_artifact
+                save_artifact(event_id, "document_mappings", [m.to_dict() for m in mappings])
         
         relevant_count = sum(1 for m in mappings if m.is_relevant)
         
@@ -720,8 +704,16 @@ class EventMapper:
             
             mappings.append(mapping)
             
-            if save_mappings:
-                self.save_mapping(mapping)
+        if save_mappings and mappings:
+            from utils.db_storage import save_artifact, load_artifact
+            
+            # Merge with existing
+            existing_data = load_artifact(event.event_id, "document_mappings") or []
+            existing_mappings = {d["doc_id"]: d for d in existing_data}
+            for m in mappings:
+                existing_mappings[m.doc_id] = m.to_dict()
+                
+            save_artifact(event.event_id, "document_mappings", list(existing_mappings.values()))
         
         relevant_count = sum(1 for m in mappings if m.is_relevant)
         logger.info(

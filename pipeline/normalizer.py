@@ -373,18 +373,10 @@ class DocumentNormalizer:
     
     def __init__(self, normalized_dir: Optional[str] = None):
         """
-        Initialize normalizer.
-        
-        Args:
-            normalized_dir: Directory for normalized documents
+        Initialize normalizer. 
+        Filesystem storage is deprecated, uses PostgreSQL directly.
         """
-        if normalized_dir is None:
-            project_root = Path(__file__).parent.parent
-            normalized_dir = project_root / "data" / "normalized"
-        
-        self.normalized_dir = Path(normalized_dir)
-        self.normalized_dir.mkdir(parents=True, exist_ok=True)
-        
+        self.normalized_dir = None
         self.source_detector = SourceTypeDetector()
         self.author_inferrer = AuthorTypeInferrer()
         self.text_cleaner = TextCleaner()
@@ -458,110 +450,96 @@ class DocumentNormalizer:
     
     def normalize_and_save(self, ingested_doc: dict) -> NormalizedDocument:
         """
-        Normalize and save a document.
-        
-        Args:
-            ingested_doc: Ingested document dictionary
-        
-        Returns:
-            NormalizedDocument
+        Normalize a document. Note: saving single documents is deprecated in favor of normalize_batch.
         """
-        normalized = self.normalize(ingested_doc)
-
-        # Preserve extracted entities when the canonical text is unchanged.
-        # This avoids re-running expensive NER on repeated pipeline runs.
-        existing = self.load(normalized.doc_id)
-        if existing is not None:
-            same_text = (
-                existing.title == normalized.title and
-                existing.raw_text == normalized.raw_text
-            )
-            if same_text and existing.extracted_entities and not normalized.extracted_entities:
-                normalized.extracted_entities = existing.extracted_entities
-
-        self.save(normalized)
-        return normalized
+        return self.normalize(ingested_doc)
     
     def save(self, doc: NormalizedDocument) -> None:
-        """Save normalized document to disk."""
-        from utils.json_utils import dump_json
-        doc_path = self.normalized_dir / f"{doc.doc_id}.json"
-        with open(doc_path, 'w', encoding='utf-8') as f:
-            dump_json(doc.to_dict(), f)
+        """Deprecated."""
+        pass
     
     def load(self, doc_id: str) -> Optional[NormalizedDocument]:
-        """Load a normalized document by ID."""
-        doc_path = self.normalized_dir / f"{doc_id}.json"
-        if not doc_path.exists():
-            return None
-        
-        with open(doc_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            return NormalizedDocument.from_dict(data)
+        """Deprecated. Document-level loading is not supported in the bulk DB architecture."""
+        return None
     
     def load_all_for_event(self, event_id: str) -> List[NormalizedDocument]:
-        """Load all normalized documents for an event."""
-        documents = []
+        """Load all normalized documents for an event from PostgreSQL."""
+        from utils.db_storage import load_artifact
+        data = load_artifact(event_id, "normalized_documents")
+        if not data:
+            return []
         
-        for doc_file in self.normalized_dir.glob("*.json"):
-            try:
-                with open(doc_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    if data.get("event_id") == event_id:
-                        documents.append(NormalizedDocument.from_dict(data))
-            except Exception as e:
-                logger.debug(f"Error loading {doc_file}: {e}")
-        
-        return documents
+        return [NormalizedDocument.from_dict(d) for d in data]
     
     def normalize_batch(
         self,
+        event_id: str,
         ingested_docs: List[dict],
         save: bool = True
     ) -> List[NormalizedDocument]:
         """
-        Normalize a batch of documents.
+        Normalize a batch of documents and save them to PostgreSQL in bulk.
         
         Args:
+            event_id: The target event for bulk storing
             ingested_docs: List of ingested document dicts
-            save: Whether to save to disk
+            save: Whether to save to database
         
         Returns:
             List of normalized documents
         """
         normalized = []
         
+        # Load existing docs to preserve entities
+        from utils.db_storage import load_artifact, save_artifact
+        existing_data = load_artifact(event_id, "normalized_documents") or []
+        existing_docs = {d["doc_id"]: NormalizedDocument.from_dict(d) for d in existing_data}
+        
         for doc in ingested_docs:
             try:
                 norm_doc = self.normalize(doc)
-                if save:
-                    self.save(norm_doc)
+                
+                # Preserve extracted entities conditionally
+                existing = existing_docs.get(norm_doc.doc_id)
+                if existing:
+                    same_text = (
+                        existing.title == norm_doc.title and
+                        existing.raw_text == norm_doc.raw_text
+                    )
+                    if same_text and existing.extracted_entities and not norm_doc.extracted_entities:
+                        norm_doc.extracted_entities = existing.extracted_entities
+                
                 normalized.append(norm_doc)
             except Exception as e:
                 logger.error(f"Failed to normalize document: {e}")
         
         logger.info(f"Normalized {len(normalized)} documents")
+        
+        if save and normalized:
+            save_artifact(event_id, "normalized_documents", [d.to_dict() for d in normalized])
+            
         return normalized
     
     def update_entities(
         self,
+        event_id: str,
         doc_id: str,
         entities: List[Dict]
     ) -> Optional[NormalizedDocument]:
         """
-        Update extracted entities for a document.
-        
-        Args:
-            doc_id: Document ID
-            entities: List of entity dicts
-        
-        Returns:
-            Updated document or None
+        Update extracted entities for a document in the bulk db.
         """
-        doc = self.load(doc_id)
-        if doc is None:
-            return None
+        from utils.db_storage import save_artifact
+        docs = self.load_all_for_event(event_id)
+        target_doc = None
         
-        doc.extracted_entities = entities
-        self.save(doc)
-        return doc
+        for doc in docs:
+            if doc.doc_id == doc_id:
+                doc.extracted_entities = entities
+                target_doc = doc
+                break
+                
+        if target_doc:
+            save_artifact(event_id, "normalized_documents", [d.to_dict() for d in docs])
+            
+        return target_doc

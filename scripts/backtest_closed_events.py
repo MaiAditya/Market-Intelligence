@@ -374,9 +374,7 @@ def _run_single_event(
 
     # 3) normalize
     t = time.perf_counter()
-    normalized_docs = []
-    for doc in docs:
-        normalized_docs.append(normalizer.normalize_and_save(doc.to_dict()))
+    normalized_docs = normalizer.normalize_batch(event_id, [doc.to_dict() for doc in docs])
     steps["normalize_sec"] = round(time.perf_counter() - t, 3)
     diagnostics["documents_normalized"] = len(normalized_docs)
 

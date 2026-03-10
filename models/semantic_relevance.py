@@ -6,7 +6,12 @@ documents and events.
 """
 
 import logging
+import os
 from typing import Dict, List, Optional, Tuple
+
+# Prevent PyTorch/Tokenizer from thrashing CPU threads on large batches
+os.environ["OMP_NUM_THREADS"] = "4"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import numpy as np
 
@@ -63,12 +68,14 @@ class SemanticRelevanceScorer:
             return None
         
         try:
-            # Truncate texts
-            truncated = [self._truncate_text(t) for t in texts]
+            # Truncate texts to 1200 chars (mpnet max tokens is 384, ~1500 chars max anyway)
+            # This dramatically speeds up CPU tokenization
+            truncated = [self._truncate_text(t, max_chars=1200) for t in texts]
             
-            # Encode
+            # Encode with explicit batch size for CPU
             embeddings = model.encode(
                 truncated,
+                batch_size=16,
                 show_progress_bar=False,
                 convert_to_numpy=True
             )

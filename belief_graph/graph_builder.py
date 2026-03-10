@@ -280,8 +280,14 @@ class GraphBuilder:
         if not target_time:
             return "uncertain"
         
+        # Normalize both timestamps to UTC-aware to prevent naive/aware mismatch
+        def _ensure_utc(dt):
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=timezone.utc)
+            return dt
+        
         # Calculate time difference
-        diff_hours = (target_time - event.timestamp).total_seconds() / 3600
+        diff_hours = (_ensure_utc(target_time) - _ensure_utc(event.timestamp)).total_seconds() / 3600
         
         if diff_hours < 24:
             return "immediate"
@@ -518,6 +524,7 @@ class GraphBuilder:
         market_window_only: bool = False,
         window_start: Optional[datetime] = None,
         window_end: Optional[datetime] = None,
+        cluster_only: bool = False,
     ) -> BeliefGraph:
         """
         Build belief update graph for a target event.
@@ -530,6 +537,7 @@ class GraphBuilder:
             market_window_only: If True, filter extracted events to market window
             window_start: Optional explicit lower bound (UTC naive)
             window_end: Optional explicit upper bound (UTC naive)
+            cluster_only: If True, only run clustering and save clusters, skip edge generation
         
         Returns:
             Complete BeliefGraph
@@ -567,9 +575,40 @@ class GraphBuilder:
             raw_event_nodes, market_question=market_question
         )
         logger.info(f"Clustered into {len(clustered)} unique events")
-        
+
+        # Generate per-article + combined summaries for each cluster.
+        # Reads raw_text from data/normalized/ — no LLM, pure heuristic.
+        data_dir = str(Path(__file__).parent.parent / "data")
+        for c in clustered:
+            try:
+                c.generate_summaries(data_dir=data_dir)
+            except Exception as _e:
+                logger.debug(f"Summary generation failed for cluster {c.canonical_event.event_id}: {_e}")
+
+        # Save clusters to PostgreSQL so the backend can use them for node mapping,
+        # timeline anchoring, and node detail evidence grounding.
+        try:
+            from utils.db_storage import save_artifact
+            clusters_data = [c.to_dict() for c in clustered]
+            save_artifact(belief_event_id, "event_clusters", clusters_data)
+            logger.info(f"Saved {len(clustered)} clusters to PostgreSQL pipeline_artifacts")
+        except Exception as _e:
+            logger.warning(f"Could not save clusters to DB: {_e}")
+
         # Use canonical events from clusters
         event_nodes = [c.canonical_event for c in clustered]
+        
+        # If cluster_only mode, return early with an empty graph
+        # (clusters are already saved to DB above)
+        if cluster_only:
+            logger.info(f"Cluster-only mode: returning early with {len(clustered)} clusters saved")
+            events_dict = {e.event_id: e for e in event_nodes}
+            return BeliefGraph(
+                belief_node=belief,
+                event_nodes=events_dict,
+                edges=[],
+                depth=depth
+            )
         
         # Optional: enforce market-active window for graph nodes
         if market_window_only:
@@ -706,6 +745,64 @@ class GraphBuilder:
             edges = sorted(edges, key=lambda e: e.confidence, reverse=True)[:max_edges]
             logger.info(f"Limited to top {max_edges} edges by confidence")
         
+        # ── Graph structure constraints ───────────────────────────────────────
+        # Max 5 N-1 nodes (those with a direct edge → belief).
+        # Max 2 N-2 nodes per N-1 node.
+        # Both limits are applied by sorting on edge confidence (highest first).
+        MAX_N1_NODES = 5
+        MAX_N2_PER_N1 = 2
+
+        # Identify N-1 nodes: nodes with at least one edge directed at belief
+        n1_edges_by_node: Dict[str, List[BeliefEdge]] = defaultdict(list)
+        for edge in edges:
+            if edge.to_event_id == belief.belief_id:
+                n1_edges_by_node[edge.from_event_id].append(edge)
+
+        # Sort N-1 nodes by their highest-confidence edge to belief
+        ranked_n1 = sorted(
+            n1_edges_by_node.keys(),
+            key=lambda nid: max(e.confidence for e in n1_edges_by_node[nid]),
+            reverse=True,
+        )
+        kept_n1: Set[str] = set(ranked_n1[:MAX_N1_NODES])
+
+        # Identify N-2 nodes per kept N-1 node
+        n2_edges_by_n1: Dict[str, List[BeliefEdge]] = defaultdict(list)
+        for edge in edges:
+            if edge.to_event_id in kept_n1:
+                n2_edges_by_n1[edge.to_event_id].append(edge)
+
+        kept_n2: Set[str] = set()
+        for n1_id in kept_n1:
+            # Sort N-2 candidates by confidence descending
+            n2_candidates = sorted(
+                n2_edges_by_n1[n1_id], key=lambda e: e.confidence, reverse=True
+            )
+            for e in n2_candidates[:MAX_N2_PER_N1]:
+                if e.from_event_id != belief.belief_id:
+                    kept_n2.add(e.from_event_id)
+
+        kept_nodes: Set[str] = kept_n1 | kept_n2
+
+        # Prune edges: keep only edges whose both endpoints are in kept_nodes
+        # (or whose to_event_id is the belief node)
+        pruned_edges: List[BeliefEdge] = []
+        for edge in edges:
+            if edge.to_event_id == belief.belief_id and edge.from_event_id in kept_n1:
+                pruned_edges.append(edge)
+            elif edge.to_event_id in kept_n1 and edge.from_event_id in kept_n2:
+                pruned_edges.append(edge)
+        edges = pruned_edges
+
+        # Restrict event_nodes to kept set
+        events = {nid: node for nid, node in events.items() if nid in kept_nodes}
+
+        logger.info(
+            f"Pruned to {len(kept_n1)} N-1 nodes, "
+            f"{len(kept_n2)} N-2 nodes, {len(edges)} edges "
+            f"(limits: N-1≤{MAX_N1_NODES}, N-2≤{MAX_N2_PER_N1} per N-1)"
+        )
+
         # Build final graph
         graph = BeliefGraph(
             belief_node=belief,
@@ -713,13 +810,14 @@ class GraphBuilder:
             edges=edges,
             depth=depth
         )
-        
+
         logger.info(
             f"Built belief graph: {len(graph.event_nodes)} nodes, "
             f"{len(graph.edges)} edges"
         )
-        
+
         return graph
+
     
     def get_ranked_upstream_events(
         self,

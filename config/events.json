@@ -1,168 +1,463 @@
 {
   "events": [
     {
-      "event_id": "gemini-5-release-2026",
-      "event_type": "model_release",
-      "event_title": "Google Gemini 5 Release by End 2026",
-      "event_description": "Google releasing Gemini 5 by end of 2026",
+      "event_id": "democratic-presidential-nominee-2028",
+      "event_title": "Will Chelsea Clinton win the 2028 Democratic presidential nomination?",
+      "event_type": "geopolitics",
+      "event_description": "This market will resolve to \u201cYes\u201d if the named individual wins and accepts the 2028 nomination of the Democratic Party for U.S. president. Otherwise, this market will resolve to \u201cNo\u201d.\n\nThe resolution source for this market will be a consensus of official Democratic Party sources.\n\nAny replacement of the democratic nominee before election day will not change the resolution of the market.",
+      "polymarket_slug": "will-chelsea-clinton-win-the-2028-democratic-presidential-nomination",
+      "polymarket_token_id": "46211769122513729244602558513001215391004042100934296321661285791281233261657",
+      "deadline": "2028-11-07T00:00:00Z",
       "primary_entities": [
-        "Gemini 5",
-        "Google"
+        "Will",
+        "Chelsea"
       ],
       "secondary_entities": [
-        "DeepMind",
-        "Gemini",
-        "Google AI",
-        "Alphabet"
+        "Clinton",
+        "2028",
+        "Democratic"
       ],
-      "aliases": [
-        "Gemini-5",
-        "Gemini V",
-        "Gemini Five",
-        "Gemini5"
-      ],
-      "deadline": "2026-12-31T23:59:59Z",
+      "aliases": [],
       "dependencies": [
-        "training",
-        "compute",
-        "safety",
-        "regulation",
-        "executive_statement",
-        "public_narrative"
+        "geopolitics",
+        "news"
       ],
-      "polymarket_slug": "will-google-release-gemini-5-in-2026"
+      "search_queries": [
+        "Will Chelsea Clinton win the 2028 Democratic presidential nomination?"
+      ],
+      "parent_event_slug": "democratic-presidential-nominee-2028"
     },
     {
-      "event_id": "gpt-5-release-2026",
-      "event_type": "model_release",
-      "event_title": "OpenAI GPT-5 Release by End 2026",
-      "event_description": "OpenAI releasing GPT-5 by end of 2026",
+      "event_id": "2026-nba-champion",
+      "event_title": "Will the Indiana Pacers win the 2026 NBA Finals?",
+      "event_type": "geopolitics",
+      "event_description": "This market will resolve to \u201cYes\u201d if the Indiana Pacers win the 2026 NBA Finals. Otherwise, this market will resolve to \u201cNo\u201d.\n\nThis market will resolve to \u201cNo\u201d if it becomes impossible for this team to win the 2026 NBA Finals based off the rules of the NBA.\n\nThe resolution source for this market will be information from the NBA.",
+      "polymarket_slug": "will-the-indiana-pacers-win-the-2026-nba-finals",
+      "polymarket_token_id": "108169301860964568280919009470345091856250866871799542460872818801065399794523",
+      "deadline": "2026-07-01T00:00:00Z",
       "primary_entities": [
-        "GPT-5",
-        "OpenAI"
+        "Will",
+        "Indiana"
       ],
       "secondary_entities": [
-        "GPT",
-        "ChatGPT",
-        "Sam Altman",
-        "Microsoft"
+        "Pacers",
+        "2026",
+        "Finals"
       ],
-      "aliases": [
-        "GPT5",
-        "GPT-V",
-        "GPT Five",
-        "GPT 5"
-      ],
-      "deadline": "2026-12-31T23:59:59Z",
+      "aliases": [],
       "dependencies": [
-        "training",
-        "compute",
-        "safety",
-        "regulation",
-        "executive_statement",
-        "public_narrative"
+        "geopolitics",
+        "news"
       ],
-      "polymarket_slug": "will-openai-release-gpt-5-in-2026"
+      "search_queries": [
+        "Will the Indiana Pacers win the 2026 NBA Finals?"
+      ],
+      "parent_event_slug": "2026-nba-champion"
     },
     {
-      "event_id": "eu-ai-act-enforcement-2027",
-      "event_type": "regulation",
-      "event_title": "EU AI Act Full Enforcement by 2027",
-      "event_description": "European Union AI Act becoming fully enforced by 2027",
+      "event_id": "presidential-election-winner-2028",
+      "event_title": "Will LeBron James win the 2028 US Presidential Election?",
+      "event_type": "geopolitics",
+      "event_description": "The 2028 US Presidential Election is scheduled to take place on November 7, 2028.\n\nThis market will resolve to the person who wins the 2028 US Presidential Election.\n\nThe resolution source for this market is the Associated Press, Fox News, and NBC. This market will resolve once all three sources call the race for the same candidate. If all three sources haven\u2019t called the race for the same candidate by the inauguration date (January 20, 2029) this market will resolve based on who is inaugurated.",
+      "polymarket_slug": "will-lebron-james-win-the-2028-us-presidential-election",
+      "polymarket_token_id": "39223330966352513418907732239455948906399882924787587183466504819170775983376",
+      "deadline": "2028-11-07T00:00:00Z",
       "primary_entities": [
-        "EU AI Act",
-        "European Union"
+        "Will",
+        "LeBron"
       ],
       "secondary_entities": [
-        "European Commission",
-        "AI regulation",
-        "Brussels",
-        "EU Parliament"
+        "James",
+        "2028",
+        "Presidential"
       ],
-      "aliases": [
-        "AI Act",
-        "European AI Act",
-        "EU Artificial Intelligence Act",
-        "AIA"
-      ],
-      "deadline": "2027-12-31T23:59:59Z",
+      "aliases": [],
       "dependencies": [
-        "regulation",
-        "executive_statement",
-        "public_narrative",
-        "safety"
+        "geopolitics",
+        "news"
       ],
-      "polymarket_slug": "will-eu-ai-act-be-fully-enforced-by-2027"
+      "search_queries": [
+        "Will LeBron James win the 2028 US Presidential Election?"
+      ],
+      "parent_event_slug": "presidential-election-winner-2028"
     },
     {
-      "event_id": "gemini-3pt5-release-2026",
-      "event_type": "model_release",
-      "event_title": "Google Gemini 3.5 Release by June 2026",
-      "event_description": "Google releasing Gemini 3.5 by June 30, 2026",
+      "event_id": "republican-presidential-nominee-2028",
+      "event_title": "Will Mike Pence win the 2028 Republican presidential nomination?",
+      "event_type": "geopolitics",
+      "event_description": "This market will resolve to \u201cYes\u201d if the named individual wins and accepts the 2028 nomination of the Republican Party for U.S. president. Otherwise, this market will resolve to \u201cNo\u201d.\n\nThe resolution source for this market will be a consensus of official Republican Party sources.\n\nAny replacement of the Republican nominee before election day will not change the resolution of the market.",
+      "polymarket_slug": "will-mike-pence-win-the-2028-republican-presidential-nomination",
+      "polymarket_token_id": "110467341601356058460373968989438018821471776813704553223329002744055822742107",
+      "deadline": "2028-11-07T00:00:00Z",
       "primary_entities": [
-        "Gemini 3.5",
-        "Google"
+        "Will",
+        "Mike"
       ],
       "secondary_entities": [
-        "DeepMind",
-        "Gemini",
-        "Google AI",
-        "Alphabet",
-        "Gemini 3"
+        "Pence",
+        "2028",
+        "Republican"
       ],
-      "aliases": [
-        "Gemini-3.5",
-        "Gemini 3.5 Pro",
-        "Gemini Three Point Five",
-        "Gemini3.5"
-      ],
-      "deadline": "2026-06-30T23:59:59Z",
+      "aliases": [],
       "dependencies": [
-        "training",
-        "compute",
-        "safety",
-        "regulation",
-        "executive_statement",
-        "public_narrative"
+        "geopolitics",
+        "news"
       ],
-      "polymarket_slug": "gemini-3pt5-released-by-june-30"
+      "search_queries": [
+        "Will Mike Pence win the 2028 Republican presidential nomination?"
+      ],
+      "parent_event_slug": "republican-presidential-nominee-2028"
     },
     {
-      "event_id": "iphone-17e-announce-feb-2026",
-      "event_type": "model_release",
-      "event_title": "Apple Announces iPhone 17e by Feb 28",
-      "event_description": "Apple officially announcing the iPhone 17e (or Slim/Air) device by February 28, 2026",
+      "event_id": "english-premier-league-winner",
+      "event_title": "Will Chelsea win the 2025\u201326 English Premier League?",
+      "event_type": "geopolitics",
+      "event_description": "This is a polymarket on whether the listed club will win the 2025\u201326 English Premier League.\n\nThis market will resolve to \"Yes\" if the listed club is officially crowned the winner of the 2025\u201326 English Premier League. Otherwise, it will resolve to \"No\".\n\nIf at any point it becomes impossible for the listed club to win the league (e.g. they are mathematically eliminated), the market will resolve to \"No\".\n\nIf the 2025\u201326 English Premier League season is canceled or not completed by October 1, 2026, this market will resolve to \"Other\".\n\nThe primary resolution source will be official information from the English Premier League. A consensus of credible reporting may also be used.",
+      "polymarket_slug": "will-chelsea-win-the-202526-english-premier-league",
+      "polymarket_token_id": "4734042497442858120220579084209162734274921804273685518501720660121256784098",
+      "deadline": "2026-05-27T00:00:00Z",
       "primary_entities": [
-        "iPhone 17e",
-        "Apple"
+        "Will",
+        "Chelsea"
       ],
       "secondary_entities": [
-        "iPhone 17 Slim",
-        "iPhone 17 Air",
-        "Tim Cook",
-        "Apple Event"
+        "2025\u201326",
+        "English",
+        "Premier"
       ],
-      "aliases": [
-        "iPhone 17e",
-        "iPhone 17 Slim",
-        "iPhone 17 Air"
-      ],
-      "deadline": "2026-02-28T23:59:59Z",
+      "aliases": [],
       "dependencies": [
-        "executive_statement",
-        "public_narrative",
-        "regulation",
-        "compute"
+        "geopolitics",
+        "news"
       ],
-      "polymarket_slug": "will-apple-announce-the-iphone-17e-by-february-28"
+      "search_queries": [
+        "Will Chelsea win the 2025\u201326 English Premier League?"
+      ],
+      "parent_event_slug": "english-premier-league-winner"
+    },
+    {
+      "event_id": "will-the-iranian-regime-fall-by-march-31",
+      "event_title": "Will the Iranian regime fall by March 31?",
+      "event_type": "geopolitics",
+      "event_description": "This market will resolve to \"Yes\" if the Islamic Republic of Iran\u2019s current ruling regime is overthrown, collapsed, or otherwise ceases to govern by March 31, 2026, 11:59 PM ET. Otherwise, this market will resolve to \u201cNo\u201d.\n\nThis requires a broad consensus of reporting indicating that core structures of the Islamic Republic (e.g. the office of the Supreme Leader, the Guardian Council, IRGC control under clerical authority) have been dissolved, incapacitated, or replaced by a fundamentally different governing system or otherwise lost de facto power over a majority of the population of Iran. This could occur via revolution, civil war, military coup, or voluntary abdication, but only qualifies if the Islamic Republic no longer exercises sovereign power.\n\nRoutine political events such as elections, reforms, or leadership succession do not qualify. Internal coups or power shifts that preserve the Islamic Republic\u2019s core structures also do not qualify. Only a clear break in continuity\u2014such as a new provisional government, revolutionary council, or constitution replacing the Islamic Republic will qualify.\n\nPartial loss of territory or challenges from rebel or exile groups will not qualify unless the Islamic Republic no longer administers the majority of the Iranian population within Iran. \n\nThe resolution source will be a consensus of credible reporting. ",
+      "polymarket_slug": "will-the-iranian-regime-fall-by-march-31",
+      "polymarket_token_id": "48825140812430902098404528620382945035793471220915259967486864813738884055220",
+      "deadline": "2026-03-31T00:00:00Z",
+      "primary_entities": [
+        "Will",
+        "Iranian"
+      ],
+      "secondary_entities": [
+        "regime",
+        "fall",
+        "March"
+      ],
+      "aliases": [],
+      "dependencies": [
+        "geopolitics",
+        "news"
+      ],
+      "search_queries": [
+        "Will the Iranian regime fall by March 31?"
+      ],
+      "parent_event_slug": null
+    },
+    {
+      "event_id": "who-will-be-next-supreme-leader-of-iran-515",
+      "event_title": "Will Mojtaba Khamenei be the next Supreme Leader of Iran?",
+      "event_type": "geopolitics",
+      "event_description": "The Supreme Leader of Iran is chosen by the Assembly of Experts.\n\nThis market will resolve according to the person who is named as the next Supreme Leader of the Islamic Republic of Iran.\n\nThe resolution of this market will be based on the first official announcement of the next Supreme Leader of Iran after Ali Khamenei.\n\nAny interim, acting, or temporary leader will not count toward the resolution of this market.\n\nIf Ali Khamenei remains the Supreme Leader of Iran or the next Supreme Leader of Iran is not officially announced by June 30, 2026, 11:59 PM ET, this market will resolve to \u201cNone by June 30\u201d.\n\nIf the position of Supreme Leader is formally abolished \u2014 including instances in which the Islamic Republic of Iran ceases to exist, is replaced, or no longer maintains the office of Supreme Leader \u2014 this market will resolve to \u201cPosition abolished\u201d.\n\nOnly individuals formally appointed to the office titled \u201cSupreme Leader of the Islamic Republic of Iran\u201d (or a clearly direct constitutional equivalent replacing that title) will qualify. Individuals serving solely as President, head of state, head of government, or in any other role that is not explicitly the Supreme Leader or a direct constitutional equivalent will not qualify.\n\nThe primary resolution source will be official information from the government of Iran. A consensus of credible reporting may also be used.",
+      "polymarket_slug": "will-mojtaba-khamenei-be-the-next-supreme-leader-of-iran-573",
+      "polymarket_token_id": "17755827780507870103087739732569035075234386298574900130039408497123606676791",
+      "deadline": "2026-12-31T00:00:00Z",
+      "primary_entities": [
+        "Will",
+        "Mojtaba"
+      ],
+      "secondary_entities": [
+        "Khamenei",
+        "next",
+        "Supreme"
+      ],
+      "aliases": [],
+      "dependencies": [
+        "geopolitics",
+        "news"
+      ],
+      "search_queries": [
+        "Will Mojtaba Khamenei be the next Supreme Leader of Iran?"
+      ],
+      "parent_event_slug": "who-will-be-next-supreme-leader-of-iran-515"
+    },
+    {
+      "event_id": "fed-decision-in-march-885",
+      "event_title": "Will the Fed decrease interest rates by 50+ bps after the March 2026 meeting?",
+      "event_type": "geopolitics",
+      "event_description": "The FED interest rates are defined in this market by the upper bound of the target federal funds range. The decisions on the target federal fund range are made by the Federal Open Market Committee (FOMC) meetings.\n\nThis market will resolve to the amount of basis points the upper bound of the target federal funds rate is changed by versus the level it was prior to the Federal Reserve's March 2026 meeting.\n\nIf the target federal funds rate is changed to a level not expressed in the displayed options, the change will be rounded up to the nearest 25 and will resolve to the relevant bracket. (e.g. if there's a cut/increase of 12.5 bps it will be considered to be 25 bps)\n\nThe resolution source for this market is the FOMC\u2019s statement after its meeting scheduled for March 17 - 18, 2026 according to the official calendar: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm.\n\nThe level and change of the target federal funds rate is also published at the official website of the Federal Reserve at https://www.federalreserve.gov/monetarypolicy/openmarket.htm.\n\nThis market may resolve as soon as the FOMC\u2019s statement for their March meeting with relevant data is issued. If no statement is released by the end date of the next scheduled meeting, this market will resolve to the \"No change\" bracket.",
+      "polymarket_slug": "will-the-fed-decrease-interest-rates-by-50-bps-after-the-march-2026-meeting",
+      "polymarket_token_id": "46553455570564517989191023458705371521436514261892866503067981558938998232024",
+      "deadline": "2026-03-18T00:00:00Z",
+      "primary_entities": [
+        "Will",
+        "decrease"
+      ],
+      "secondary_entities": [
+        "interest",
+        "rates",
+        "after"
+      ],
+      "aliases": [],
+      "dependencies": [
+        "geopolitics",
+        "news"
+      ],
+      "search_queries": [
+        "Will the Fed decrease interest rates by 50+ bps after the March 2026 meeting?"
+      ],
+      "parent_event_slug": "fed-decision-in-march-885"
+    },
+    {
+      "event_id": "venezuela-leader-end-of-2026",
+      "event_title": "Will Richard Grenell be the leader of Venezuela end of 2026?",
+      "event_type": "geopolitics",
+      "event_description": "This market will resolve to the individual who officially holds the position of the head of state of Venezuela on Dec 31, 2026 at 12 PM ET.\n\nFor the purposes of this market, \"officially holds\" refers to the individual that was formally appointed, confirmed (if confirmation is required), and sworn in as the head of state of Venezuela or otherwise confirmed by official government information as being the head of state of Venezuela. \n\nIf the Venezuelan government does not clearly state who is the head of state, the market will resolve to the individual who is listed as the Head of State by the UN (see: https://www.un.org/dgacm/en/content/protocol/hshgnfa.  \n\nIn the event that more than one official head of state is listed by the Venezuelan  government, this market will resolve to the individual who is listed as having primary status. If no distinction is made, the market will resolve to the individual who first assumed the position. \n\nIf no individual holds the position this market will resolve to \u201cNo Head of State\u201d. \n\nThe following do NOT constitute \"officially holding\" the role: nominated, announced, or designated as the head of state of Venezuela but appointment not yet effective; appointed with an effective date after Dec 31, 2026; previously served as the head of state of Venezuela but term has expired, resigned, or been terminated before Dec 31, 2026; serving as the head of state of Venezuela in a consultant, contractor, or unofficial capacity; named as successor or heir apparent to the head of state of Venezuela but not yet appointed; or holding a different role with oversight of the head of state of Venezuela but not the specified position itself.\n\nThe primary resolution source will be official information from the UN recognized government of Venezuela. If the Government of Venezuela does not clearly state who is the head of state, information from the UN and a consensus of credible reporting may be used. \n\nNote: this market is mutually exclusive. \n",
+      "polymarket_slug": "will-richard-grenell-be-the-leader-of-venezuela-end-of-2026",
+      "polymarket_token_id": "63041927234014862550752749844577619438319946530923167906649363118591050055991",
+      "deadline": "2026-12-31T00:00:00Z",
+      "primary_entities": [
+        "Will",
+        "Richard"
+      ],
+      "secondary_entities": [
+        "Grenell",
+        "leader",
+        "Venezuela"
+      ],
+      "aliases": [],
+      "dependencies": [
+        "geopolitics",
+        "news"
+      ],
+      "search_queries": [
+        "Will Richard Grenell be the leader of Venezuela end of 2026?"
+      ],
+      "parent_event_slug": "venezuela-leader-end-of-2026"
+    },
+    {
+      "event_id": "will-trump-acquire-greenland-before-2027",
+      "event_title": "Will Trump acquire Greenland before 2027?",
+      "event_type": "geopolitics",
+      "event_description": "This market will resolve to \"Yes\" if the United States officially announces that Greenland will come under US sovereignty by December 31, 2026, 11:59 PM ET. Otherwise this market will resolve to \"No\".\n\nSovereignty is defined as the transfer of the majority of the territory of Greenland from its current status as an autonomous territory within the Kingdom of Denmark to being under the formal governance or jurisdiction of the United States, either as a state, territory, or other classification within the US system.\n\nAn official announcement made by the United States and Denmark that Greenland will come under US sovereignty will qualify, even if the actual transfer of sovereignty is yet to occur. Only announcements of official agreements or actions (e.g. executive order, signed legislation, etc.) will count - mere posts on Social Media will not.\n\nThe resolution source for this market will be official information from the governments of the US, Greenland, and Denmark, however a consensus of credible reporting confirming that Greenland has come under U.S. sovereignty will also qualify.",
+      "polymarket_slug": "will-trump-acquire-greenland-before-2027",
+      "polymarket_token_id": "5161623255678193352839985156330393796378434470119114669671615782853260939535",
+      "deadline": "2026-12-31T00:00:00Z",
+      "primary_entities": [
+        "Will",
+        "Trump"
+      ],
+      "secondary_entities": [
+        "acquire",
+        "Greenland",
+        "before"
+      ],
+      "aliases": [],
+      "dependencies": [
+        "geopolitics",
+        "news"
+      ],
+      "search_queries": [
+        "Will Trump acquire Greenland before 2027?"
+      ],
+      "parent_event_slug": null
+    },
+    {
+      "event_id": "next-prime-minister-of-hungary",
+      "event_title": "Will the next Prime Minister of Hungary be L\u00e1szl\u00f3 Toroczkai?",
+      "event_type": "geopolitics",
+      "event_description": "Parliamentary elections are scheduled to be held in Hungary on April 12 2026.\n\nThis market will resolve to the individual who is next officially appointed and confirmed as Prime Minister of Hungary following the 2026 parliamentary election.\n\nTo count for resolution, the individual must be formally elected and appointed to the role of Prime Minister. Any interim or caretaker Prime Minister will not count toward the resolution of this market.\n\nIf no such Prime Minister is confirmed by December 31, 2026, 11:59 PM ET, this market will resolve to \u201cOther.\u201d\n\nThe primary resolution source for this market will be official information from the Government of Hungary; however, a consensus of credible reporting may also be used.",
+      "polymarket_slug": "will-the-next-prime-minister-of-hungary-be-lszl-toroczkai",
+      "polymarket_token_id": "62276312834902257904558594246531967377131544314278449037472956208145787396192",
+      "deadline": "2026-04-12T00:00:00Z",
+      "primary_entities": [
+        "Will",
+        "next"
+      ],
+      "secondary_entities": [
+        "Prime",
+        "Minister",
+        "Hungary"
+      ],
+      "aliases": [],
+      "dependencies": [
+        "geopolitics",
+        "news"
+      ],
+      "search_queries": [
+        "Will the next Prime Minister of Hungary be L\u00e1szl\u00f3 Toroczkai?"
+      ],
+      "parent_event_slug": "next-prime-minister-of-hungary"
+    },
+    {
+      "event_id": "brazil-presidential-election",
+      "event_title": "Will Luiz In\u00e1cio Lula da Silva win the 2026 Brazilian presidential election?",
+      "event_type": "geopolitics",
+      "event_description": "A presidential election is scheduled to take place in Brazil on October 4, 2026.\n\nThis market will resolve according to the listed candidate that wins this election.\n\nThis market includes any potential second round. If the result of this election isn't known by June 30, 2027, 11:59 PM ET, the market will resolve to \"Other\".\n\nThis market will resolve based on the result of the election as indicated by a consensus of credible reporting. If there is ambiguity, this market will resolve based solely on the official results as reported by the Brazilian government, specifically the Superior Electoral Court (Tribunal Superior Eleitoral, TSE) (e.g., https://dadosabertos.tse.jus.br/).",
+      "polymarket_slug": "will-luiz-incio-lula-da-silva-win-the-2026-brazilian-presidential-election",
+      "polymarket_token_id": "30630994248667897740988010928640156931882346081873066002335460180076741328029",
+      "deadline": "2026-10-04T00:00:00Z",
+      "primary_entities": [
+        "Will",
+        "Luiz"
+      ],
+      "secondary_entities": [
+        "In\u00e1cio",
+        "Lula",
+        "Silva"
+      ],
+      "aliases": [],
+      "dependencies": [
+        "geopolitics",
+        "news"
+      ],
+      "search_queries": [
+        "Will Luiz In\u00e1cio Lula da Silva win the 2026 Brazilian presidential election?"
+      ],
+      "parent_event_slug": "brazil-presidential-election"
+    },
+    {
+      "event_id": "will-iran-close-the-strait-of-hormuz-by-2027",
+      "event_title": "Will Iran close the Strait of Hormuz by March 31?",
+      "event_type": "geopolitics",
+      "event_description": "If Iran halts or severely restricts international maritime traffic through the Strait of Hormuz by March 31, 2026, 11:59 PM ET, this market will resolve to \"Yes\". Otherwise, this market will resolve to \"No\".\n\nThe primary resolution source for this market will be official governmental information, however a consensus of credible reporting will also be used.",
+      "polymarket_slug": "will-iran-close-the-strait-of-hormuz-by-march-31",
+      "polymarket_token_id": "11259214629259962188961658360673801608680858594287954976598964541495296876564",
+      "deadline": "2026-12-31T00:00:00Z",
+      "primary_entities": [
+        "Will",
+        "Iran"
+      ],
+      "secondary_entities": [
+        "close",
+        "Strait",
+        "Hormuz"
+      ],
+      "aliases": [],
+      "dependencies": [
+        "geopolitics",
+        "news"
+      ],
+      "search_queries": [
+        "Will Iran close the Strait of Hormuz by March 31?"
+      ],
+      "parent_event_slug": "will-iran-close-the-strait-of-hormuz-by-2027"
+    },
+    {
+      "event_id": "russia-x-ukraine-ceasefire-by-march-31-2026",
+      "event_title": "Russia x Ukraine ceasefire by March 31, 2026?",
+      "event_type": "geopolitics",
+      "event_description": "This market will resolve to \"Yes\" if there is an official ceasefire agreement, defined as a publicly announced and mutually agreed halt in military engagement, between Russia and Ukraine by March 31, 2026, 11:59 PM ET.\n\nIf the agreement is officially reached before the resolution date, this market will resolve to \"Yes,\" regardless of whether the ceasefire officially starts afterward.\n\nOnly ceasefires which constitute a general pause in the conflict will qualify. Ceasefires which only apply to energy infrastructure, the Black Sea, or other similar agreements will not qualify.\n\nAny form of informal agreement will not be considered an official ceasefire. Humanitarian pauses will not count toward the resolution of this market.\n\nThis market's resolution will be based on official announcements from both Russia and Ukraine; however, a wide consensus of credible media reporting stating an official ceasefire agreement between Russia and Ukraine has been reached will suffice.",
+      "polymarket_slug": "russia-x-ukraine-ceasefire-by-march-31-2026",
+      "polymarket_token_id": "24394670903706558879845790079760859552309100903651562795058188175118941818512",
+      "deadline": "2026-03-31T00:00:00Z",
+      "primary_entities": [
+        "Russia",
+        "Ukraine"
+      ],
+      "secondary_entities": [
+        "ceasefire",
+        "March",
+        "2026"
+      ],
+      "aliases": [],
+      "dependencies": [
+        "geopolitics",
+        "news"
+      ],
+      "search_queries": [
+        "Russia x Ukraine ceasefire by March 31, 2026?"
+      ],
+      "parent_event_slug": null
+    },
+    {
+      "event_id": "next-president-of-vietnam",
+      "event_title": "Will Ph\u1ea1m Minh Ch\u00ednh be the next President of Vietnam?",
+      "event_type": "geopolitics",
+      "event_description": "Vietnam\u2019s President is selected through internal decisions of the Communist Party of Vietnam and its National Assembly. The Party is holding its 14th National Congress from January 19 to January 25, 2026, after which the National Assembly of Vietnam is expected to elect leadership positions including President.\n\nThis market will resolve to the next individual who is formally elected by the National Assembly to assume the office of President of Vietnam.\n\nTo count for resolution, the individual must be formally elected to assume the office of President. Any acting, interim, or caretaker President will not count toward the resolution of this market.\n\nIf the offices of President of Vietnam and General Secretary of the Communist Party of Vietnam are merged such that an individual is elected to hold a joint office as leader of the party and head of state of Vietnam, this market will resolve to that individual.\n\nIf no such President is elected by December 31, 2026, 11:59 PM ET, this market will resolve to \u201cOther\u201d.\n\nThe primary resolution source for this market will be official information from the National Assembly of Vietnam; however, a consensus of credible reporting may also be used.",
+      "polymarket_slug": "will-phm-minh-chnh-be-the-next-president-of-vietnam",
+      "polymarket_token_id": "40143048263981796652696013147213585447022933832104405821510706617705632953700",
+      "deadline": "2026-01-25T00:00:00Z",
+      "primary_entities": [
+        "Will",
+        "Ph\u1ea1m"
+      ],
+      "secondary_entities": [
+        "Minh",
+        "Ch\u00ednh",
+        "next"
+      ],
+      "aliases": [],
+      "dependencies": [
+        "geopolitics",
+        "news"
+      ],
+      "search_queries": [
+        "Will Ph\u1ea1m Minh Ch\u00ednh be the next President of Vietnam?"
+      ],
+      "parent_event_slug": "next-president-of-vietnam"
+    },
+    {
+      "event_id": "what-will-happen-before-gta-vi",
+      "event_title": "Will Jesus Christ return before GTA VI?",
+      "event_type": "geopolitics",
+      "event_description": "This market will resolve to \"Yes\" if The Second Coming of Jesus Christ occurs before Grand Theft Auto VI is officially released in the US. Otherwise, this market will resolve to \"No\".\n\nIf neither occurs by July 31, 2026, 11:59 PM ET, this market will resolve to 50-50.\n\nFor the purposes of this market, \"release\" refers to the game becoming publicly available for purchase or download in the US. Early access, beta versions, other forms of pre-release availability, or leaks will not count as an official release. If the release is only for certain consoles (e.g. Xbox Series X/S) it will count.\n\nThe resolution source for the release of GTA VI is official information from Rockstar Games or its parent company, Take-Two Interactive.\n\nThe resolution source for the return of Jesus will be a consensus of credible sources.",
+      "polymarket_slug": "will-jesus-christ-return-before-gta-vi-665",
+      "polymarket_token_id": "90435811253665578014957380826505992530054077692143838383981805324273750424057",
+      "deadline": "2026-07-31T12:00:00Z",
+      "primary_entities": [
+        "Will",
+        "Jesus"
+      ],
+      "secondary_entities": [
+        "Christ",
+        "return",
+        "before"
+      ],
+      "aliases": [],
+      "dependencies": [
+        "geopolitics",
+        "news"
+      ],
+      "search_queries": [
+        "Will Jesus Christ return before GTA VI?"
+      ],
+      "parent_event_slug": "what-will-happen-before-gta-vi"
+    },
+    {
+      "event_id": "will-the-us-confirm-that-aliens-exist-before-2027",
+      "event_title": "Will the US confirm that aliens exist before 2027?",
+      "event_type": "geopolitics",
+      "event_description": "This market will resolve to \"Yes\" if the President of the United States, any member of the Cabinet of the United States, any member of the Joint Chiefs of Staff, or any US federal agency definitively states that extraterrestrial life or technology exists by December 31, 2026, 11:59 PM ET. Otherwise, this market will resolve to \"No\".\n\nThe primary resolution source for this market will be official information from the government of the United States, however a consensus of credible reporting will also be used.",
+      "polymarket_slug": "will-the-us-confirm-that-aliens-exist-before-2027",
+      "polymarket_token_id": "107505882767731489358349912513945399560393482969656700824895970500493757150417",
+      "deadline": "2026-12-31T00:00:00Z",
+      "primary_entities": [
+        "Will",
+        "confirm"
+      ],
+      "secondary_entities": [
+        "that",
+        "aliens",
+        "exist"
+      ],
+      "aliases": [],
+      "dependencies": [
+        "geopolitics",
+        "news"
+      ],
+      "search_queries": [
+        "Will the US confirm that aliens exist before 2027?"
+      ],
+      "parent_event_slug": null
     }
-  ],
-  "dependency_descriptions": {
-    "training": "Information about model training progress, compute usage, datasets, training milestones, and training completion",
-    "compute": "Information about computational resources, GPUs, TPUs, infrastructure, data centers, and hardware availability",
-    "safety": "Information about safety testing, alignment research, red teaming, risks, and responsible AI development",
-    "regulation": "Information about regulatory requirements, compliance, legal frameworks, government oversight, and policy",
-    "executive_statement": "Official statements, announcements, press releases, or communications from company executives or leadership",
-    "public_narrative": "Public perception, media coverage, social media sentiment, and general discourse about the event"
-  }
+  ]
 }

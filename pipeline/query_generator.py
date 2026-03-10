@@ -159,6 +159,19 @@ class QueryGenerator:
         
         # Add event-type-specific templates
         event_type_config = self.event_type_templates.get(event.event_type, {})
+        
+        # Fallback for dynamically generated events without specific configs
+        if event.event_type == "dynamic" and not event_type_config:
+            # Inject a basic default query based on the entities
+            queries.append(GeneratedQuery(
+                event_id=event.event_id,
+                query=f"{' '.join(primary_entities + secondary_entities)} news updates",
+                query_type="general",
+                expected_bias="neutral",
+                template_used="dynamic fallback",
+                entity_used=", ".join(primary_entities)
+            ))
+            
         for family_name, templates in event_type_config.items():
             # Get expected bias from main family config
             expected_bias = self.templates.get(family_name, {}).get("expected_bias", "neutral")

@@ -123,23 +123,14 @@ class SignalExtractor:
     ):
         """
         Initialize signal extractor.
-        
-        Args:
-            registry: Event registry
-            normalizer: Document normalizer
-            mapper: Event-document mapper
-            output_dir: Directory for signal storage
+        Filesystem storage is deprecated, uses PostgreSQL directly.
         """
         logger.info("Initializing SignalExtractor...")
         self.registry = registry or get_registry()
         self.normalizer = normalizer or DocumentNormalizer()
         self.mapper = mapper or EventMapper(self.registry, self.normalizer)
         
-        if output_dir is None:
-            project_root = Path(__file__).parent.parent
-            output_dir = project_root / "data" / "signals"
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir = None
         
         # Initialize classifiers
         self.type_classifier = SignalTypeClassifier()
@@ -389,33 +380,25 @@ class SignalExtractor:
             
             signals.append(signal)
             
-            if save_signals:
-                self.save_signal(signal)
+        if save_signals and signals:
+            from utils.db_storage import save_artifact
+            save_artifact(event_id, "signals", [s.to_dict() for s in signals])
         
         logger.info(f"Extracted {len(signals)} signals for event {event_id}")
         return signals
     
     def save_signal(self, signal: Signal) -> None:
-        """Save a signal to disk."""
-        from utils.json_utils import dump_json
-        signal_path = self.output_dir / f"{signal.signal_id}.json"
-        with open(signal_path, 'w', encoding='utf-8') as f:
-            dump_json(signal.to_dict(), f)
+        """Deprecated."""
+        pass
     
     def load_signals_for_event(self, event_id: str) -> List[Signal]:
-        """Load all signals for an event."""
-        signals = []
-        
-        for signal_path in self.output_dir.glob("*.json"):
-            try:
-                with open(signal_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    if data.get("event_id") == event_id:
-                        signals.append(Signal.from_dict(data))
-            except Exception as e:
-                logger.warning(f"Failed to load signal {signal_path}: {e}")
-        
-        return signals
+        """Load all signals for an event from PostgreSQL."""
+        from utils.db_storage import load_artifact
+        data = load_artifact(event_id, "signals")
+        if not data:
+            return []
+            
+        return [Signal.from_dict(d) for d in data]
     
     def get_signal_summary(
         self,

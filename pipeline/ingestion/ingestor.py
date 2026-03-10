@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlparse
 
 
 def _utc_now() -> datetime:
@@ -31,6 +32,125 @@ from .twitter_scraper import TwitterScraperSync, Tweet
 from .web_scraper import WebScraper, ScrapedPage
 
 logger = logging.getLogger(__name__)
+
+# ── Content filter constants ──────────────────────────────────────────────────
+# Domains whose content is not useful for market intelligence (video/social noise)
+_SKIP_DOMAINS: frozenset = frozenset({
+    "youtube.com", "youtu.be",
+    "tiktok.com",
+    "vimeo.com",
+    "instagram.com",
+    "facebook.com", "fb.com", "fb.watch",
+    "twitch.tv",
+})
+
+# Well-known brand name overrides for source display
+_BRAND_OVERRIDES: dict = {
+    "techcrunch": "TechCrunch",
+    "businessinsider": "Business Insider",
+    "theverge": "The Verge",
+    "arstechnica": "Ars Technica",
+    "venturebeat": "VentureBeat",
+    "fastcompany": "Fast Company",
+    "nytimes": "New York Times",
+    "washingtonpost": "Washington Post",
+    "wsj": "Wall Street Journal",
+    "reuters": "Reuters",
+    "bloomberg": "Bloomberg",
+    "wired": "Wired",
+    "zdnet": "ZDNet",
+    "cnet": "CNET",
+    "engadget": "Engadget",
+    "thenextweb": "TNW",
+    "theguardian": "The Guardian",
+    "bbc": "BBC",
+    "cnbc": "CNBC",
+    "apnews": "AP News",
+    "medium": "Medium",
+    "substack": "Substack",
+    "github": "GitHub",
+    "politico": "Politico",
+    "axios": "Axios",
+    "theatlantic": "The Atlantic",
+    "fortune": "Fortune",
+    "forbes": "Forbes",
+    "ft": "Financial Times",
+    "cnn": "CNN",
+    "nbcnews": "NBC News",
+    "coindesk": "CoinDesk",
+    "marketwatch": "MarketWatch",
+    "reddit": "Reddit",
+}
+
+
+def _domain_to_source_name(domain: str, url: str = "") -> str:
+    """
+    Convert a raw domain/URL into a human-readable source name.
+    e.g. 'medium.com' → 'Medium', 'geeky-gadgets.com' → 'Geeky Gadgets'
+    """
+    # Try to extract hostname from full URL
+    hostname = ""
+    if url:
+        try:
+            hostname = urlparse(url).hostname or ""
+            hostname = hostname.lstrip("www.").lstrip("m.").lstrip("mobile.")
+        except Exception:
+            pass
+    if not hostname:
+        hostname = (domain or "").split("/")[0].strip().lstrip("www.")
+    if not hostname:
+        return "Web"
+    main_label = hostname.split(".")[0].lower()
+    if main_label in _BRAND_OVERRIDES:
+        return _BRAND_OVERRIDES[main_label]
+    # Title-case with hyphen → space
+    return " ".join(w.capitalize() for w in main_label.split("-")) or "Web"
+
+
+def _should_skip_document(url: str, raw_text: str) -> bool:
+    """
+    Return True if a document should be skipped. Filters:
+    1. Video/social-media domain blocklist (no useful text content)
+    2. Non-English text (detected on first 500 chars)
+
+    Falls back to False (accept) on any detection error to avoid dropping
+    ambiguous or very short documents.
+    """
+    # 1. Domain blocklist
+    try:
+        host = urlparse(url).netloc.lower().lstrip("www.")
+        # Match exact domain or any subdomain (e.g. m.youtube.com)
+        if any(host == d or host.endswith("." + d) for d in _SKIP_DOMAINS):
+            return True
+    except Exception:
+        pass
+
+    # 2. Language detection (English only)
+    sample = (raw_text or "")[:500].strip()
+    if len(sample) >= 50:  # Only check if there's enough text
+        try:
+            from langdetect import detect, LangDetectException
+            lang = detect(sample)
+            if lang != "en":
+                return True
+        except Exception:
+            pass  # Accept on detection failure
+
+    return False
+
+
+_summarizer = None  # Module-level lazy singleton
+
+def _get_summarizer():
+    global _summarizer
+    if _summarizer is None:
+        try:
+            from .article_summarizer import ArticleSummarizer
+            _summarizer = ArticleSummarizer()
+        except Exception as e:
+            logger.warning(f"ArticleSummarizer unavailable: {e}")
+            _summarizer = False  # Sentinel — don't retry
+    return _summarizer if _summarizer else None
 
 
 @dataclass
@@ -124,7 +244,8 @@ class DataIngestor:
         self,
         data_dir: Optional[str] = None,
         max_results_per_query: int = 20,
-        max_workers: int = 4
+        max_workers: int = 4,
+        summarize_on_ingest: bool = False,
     ):
         """
         Initialize the data ingestor.
@@ -133,16 +254,17 @@ class DataIngestor:
             data_dir: Directory to store raw documents
             max_results_per_query: Max results per search query
             max_workers: Max parallel workers for scraping
+            summarize_on_ingest: If True, auto-generate BART summary after each save
         """
         if data_dir is None:
             project_root = Path(__file__).parent.parent.parent
             data_dir = project_root / "data" / "documents"
         
         self.data_dir = Path(data_dir)
-        self.data_dir.mkdir(parents=True, exist_ok=True)
         
         self.max_results = max_results_per_query
         self.max_workers = max_workers
+        self.summarize_on_ingest = summarize_on_ingest
         
         # Initialize source clients
         self.reddit = RedditClient()
@@ -160,33 +282,13 @@ class DataIngestor:
         self._load_seen_hashes()
     
     def _load_ingested_urls(self) -> None:
-        """Load set of already ingested URLs from existing documents."""
-        for doc_file in self.data_dir.glob("*.json"):
-            try:
-                with open(doc_file, 'r', encoding='utf-8') as f:
-                    doc = json.load(f)
-                    if "url" in doc:
-                        self._ingested_urls.add(doc["url"])
-            except Exception:
-                pass
+        pass
     
     def _load_seen_hashes(self) -> None:
-        """Load content hashes from persistence file."""
-        if self._hashes_path.exists():
-            try:
-                with open(self._hashes_path, 'r') as f:
-                    self._seen_hashes = set(json.load(f))
-                logger.debug(f"Loaded {len(self._seen_hashes)} content hashes")
-            except Exception:
-                pass
+        pass
     
     def _save_seen_hashes(self) -> None:
-        """Persist content hashes to disk."""
-        try:
-            with open(self._hashes_path, 'w') as f:
-                json.dump(list(self._seen_hashes), f)
-        except Exception as e:
-            logger.warning(f"Failed to save content hashes: {e}")
+        pass
     
     @staticmethod
     def _compute_content_hash(title: str, text: str) -> str:
@@ -198,13 +300,19 @@ class DataIngestor:
         """
         Save ingested document to disk if URL and content are new.
 
-        Two-layer dedup:
+        Filtering → Two-layer dedup:
+        0. Content filter — skip video domains, non-English text
         1. URL dedup — exact URL match
         2. Content hash dedup — SHA-256 of title + first 200 chars
 
         Returns:
-            True if saved, False if skipped as duplicate.
+            True if saved, False if skipped as duplicate or filtered.
         """
+        # 0. Content filter gate
+        if _should_skip_document(doc.url, doc.raw_text):
+            logger.debug(f"Filtered out (domain/language): {doc.url}")
+            return False
+
         content_hash = self._compute_content_hash(doc.title, doc.raw_text)
 
         with self._url_lock:
@@ -216,20 +324,24 @@ class DataIngestor:
             self._ingested_urls.add(doc.url)
             self._seen_hashes.add(content_hash)
 
-        from utils.json_utils import dump_json
-        doc_path = self.data_dir / f"{doc.doc_id}.json"
         try:
-            with open(doc_path, 'w', encoding='utf-8') as f:
-                dump_json(doc.to_dict(), f)
+            # Optionally generate summary before saving
+            if self.summarize_on_ingest and doc.raw_text and len(doc.raw_text.split()) >= 20:
+                summarizer = _get_summarizer()
+                if summarizer:
+                    try:
+                        doc.metadata["summary"] = summarizer.summarize(
+                            doc.raw_text, title=doc.title
+                        )
+                    except Exception as se:
+                        logger.debug(f"Summary generation skipped: {se}")
+
+            # FILE SAVE REMOVED: Managed centrally in ingest_for_event
         except Exception:
             with self._url_lock:
                 self._ingested_urls.discard(doc.url)
                 self._seen_hashes.discard(content_hash)
             raise
-        
-        # Persist hashes periodically (every 50 new docs)
-        if len(self._seen_hashes) % 50 == 0:
-            self._save_seen_hashes()
         
         return True
     
@@ -303,7 +415,7 @@ class DataIngestor:
         """Convert ScrapedPage to IngestedDocument."""
         return IngestedDocument(
             doc_id=generate_doc_id(page.url, page.scraped_at),
-            source="web",
+            source=_domain_to_source_name(page.domain, page.url),
             url=page.url,
             title=page.title,
             raw_text=page.text,
@@ -582,51 +694,24 @@ class DataIngestor:
             f"{len(all_documents)} total documents"
         )
         
+        from utils.db_storage import save_artifact
+        save_artifact(event_id, "raw_documents", [d.to_dict() for d in all_documents])
+        
         return all_documents
     
     def get_document(self, doc_id: str) -> Optional[IngestedDocument]:
-        """Load a document by ID."""
-        doc_path = self.data_dir / f"{doc_id}.json"
-        if not doc_path.exists():
-            return None
-        
-        with open(doc_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            return IngestedDocument.from_dict(data)
+        """No longer supported in DB-only mode. Use get_documents_for_event."""
+        return None
     
     def get_documents_for_event(self, event_id: str) -> List[IngestedDocument]:
         """Load all documents for an event."""
-        documents = []
+        from utils.db_storage import load_artifact
+        data = load_artifact(event_id, "raw_documents")
+        if not data:
+            return []
         
-        for doc_file in self.data_dir.glob("*.json"):
-            try:
-                with open(doc_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    if data.get("event_id") == event_id:
-                        documents.append(IngestedDocument.from_dict(data))
-            except Exception as e:
-                logger.debug(f"Error loading {doc_file}: {e}")
-        
-        return documents
+        return [IngestedDocument.from_dict(d) for d in data]
     
     def get_stats(self) -> Dict:
         """Get ingestion statistics."""
-        stats = {
-            "total_documents": len(list(self.data_dir.glob("*.json"))),
-            "by_source": {},
-            "by_event": {}
-        }
-        
-        for doc_file in self.data_dir.glob("*.json"):
-            try:
-                with open(doc_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    source = data.get("source", "unknown")
-                    event = data.get("event_id", "unknown")
-                    
-                    stats["by_source"][source] = stats["by_source"].get(source, 0) + 1
-                    stats["by_event"][event] = stats["by_event"].get(event, 0) + 1
-            except Exception:
-                pass
-        
-        return stats
+        return {}
