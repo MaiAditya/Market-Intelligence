@@ -7,11 +7,53 @@ with URL + content-hash dedup via ON CONFLICT DO NOTHING.
 
 import hashlib
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+_DOMAIN_RE = re.compile(
+    r'^(https?://)?(www\.)?[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)*\.[a-zA-Z]{2,6}(/)?$'
+)
+
+
+def _looks_like_domain(text: str) -> bool:
+    """Return True if text looks like a bare domain name rather than a real headline."""
+    if not text:
+        return True
+    t = text.strip()
+    if len(t) > 80 or ' ' in t:
+        return False
+    if _DOMAIN_RE.match(t):
+        return True
+    if '.' in t:
+        parts = t.rsplit('.', 1)
+        if len(parts) == 2 and parts[1].lower() in (
+            'com', 'org', 'net', 'io', 'co', 'gov', 'edu', 'news',
+            'uk', 'us', 'eu', 'ca', 'au', 'de', 'fr', 'vn', 'my', 'ai', 'in',
+        ):
+            return True
+    return False
+
+
+def _fix_domain_title(title: str, text: str) -> str:
+    """If title looks like a domain, extract the first sentence of text as the title."""
+    if not _looks_like_domain(title):
+        return title
+    if not text:
+        return title
+    # Take first sentence (up to first period, question mark, or exclamation followed by space)
+    first_line = text.strip().split('\n')[0].strip()
+    # Try to find the first sentence
+    m = re.match(r'^(.{10,200}?[.!?])(?:\s|$)', first_line)
+    if m:
+        return m.group(1).strip()
+    # Otherwise use the first line (up to 200 chars)
+    if len(first_line) >= 10:
+        return first_line[:200].strip()
+    return title
 
 
 def _compute_content_hash(title: str, text: str) -> str:
@@ -76,6 +118,7 @@ class DBWriter:
         """
         Insert a document into feed_items. Returns True if inserted, False if deduped.
         """
+        title = _fix_domain_title(title, text)
         content_hash = _compute_content_hash(title, text)
         tier = _infer_source_tier(source, domain)
         confidence = _infer_confidence(tier)

@@ -20,6 +20,33 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
+# Pattern that matches strings that look like bare domain names (e.g. "axios.com", "www.theguardian.com")
+_DOMAIN_RE = re.compile(
+    r'^(https?://)?(www\.)?[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)*\.[a-zA-Z]{2,6}(/)?$'
+)
+
+
+def _looks_like_domain(text: str) -> bool:
+    """Return True if text looks like a bare domain name rather than a real title."""
+    if not text:
+        return True
+    t = text.strip()
+    if len(t) > 80:
+        return False
+    # Matches "axios.com", "www.theguardian.com", "https://pbs.org/", etc.
+    if _DOMAIN_RE.match(t):
+        return True
+    # Also catch things like "Axios.com" (capitalised domain)
+    if '.' in t and ' ' not in t and len(t) < 60:
+        parts = t.rsplit('.', 1)
+        if len(parts) == 2 and parts[1].lower() in (
+            'com', 'org', 'net', 'io', 'co', 'gov', 'edu', 'news',
+            'uk', 'us', 'eu', 'ca', 'au', 'de', 'fr', 'vn', 'my',
+            'ai', 'in',
+        ):
+            return True
+    return False
+
 
 @dataclass
 class ScrapedPage:
@@ -160,15 +187,35 @@ class WebScraper:
         soup = BeautifulSoup(html, 'html.parser')
         domain = urlparse(url).netloc
         
-        # Extract title
+        # Extract title — try multiple sources, reject domain-only values
         title = ""
+        candidates = []
+
+        # 1. <title> tag
         title_tag = soup.find('title')
         if title_tag:
-            title = title_tag.get_text(strip=True)
-        else:
-            h1_tag = soup.find('h1')
-            if h1_tag:
-                title = h1_tag.get_text(strip=True)
+            candidates.append(title_tag.get_text(strip=True))
+
+        # 2. og:title meta
+        og_title = soup.find('meta', attrs={'property': 'og:title'})
+        if og_title:
+            candidates.append(og_title.get('content', '').strip())
+
+        # 3. twitter:title meta
+        tw_title = soup.find('meta', attrs={'name': 'twitter:title'})
+        if tw_title:
+            candidates.append(tw_title.get('content', '').strip())
+
+        # 4. First <h1> tag
+        h1_tag = soup.find('h1')
+        if h1_tag:
+            candidates.append(h1_tag.get_text(strip=True))
+
+        # Pick the first candidate that isn't a bare domain name
+        for c in candidates:
+            if c and not _looks_like_domain(c):
+                title = c
+                break
         
         # Extract meta description
         meta_desc = ""
