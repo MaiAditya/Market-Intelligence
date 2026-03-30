@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_DB_URL = "postgresql://causal:causal@localhost:5432/causal_interface"
 
 def _get_db_url() -> str:
-    return os.getenv("CAUSAL_DB_URL", _DEFAULT_DB_URL)
+    return os.getenv("DATABASE_URL_SYNC") or _DEFAULT_DB_URL
 
 def save_artifact(event_id: str, artifact_type: str, data: Any) -> None:
     """

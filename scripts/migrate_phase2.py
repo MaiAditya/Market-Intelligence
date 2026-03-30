@@ -85,7 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_documents_similarity
 
 
 def run_migration(db_url: str = None) -> None:
-    db_url = db_url or os.getenv("CAUSAL_DB_URL", _DEFAULT_DB_URL)
+    db_url = db_url or os.getenv("DATABASE_URL_SYNC") or _DEFAULT_DB_URL
     logger.info(f"Connecting to DB: {db_url.split('@')[-1]}")
 
     conn = psycopg2.connect(db_url)

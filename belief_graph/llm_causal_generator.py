@@ -10,7 +10,7 @@ Flow:
   2. Call LLM → structured JSON {nodes, edges}
   3. Validate and return LLMCausalGraph dataclass
 
-The graph is later persisted to PostgreSQL via CausalGraphDBWriter.
+The graph is saved as a pipeline artifact and later ingested into causal_graphs tables by PipelineService.
 """
 
 import hashlib
@@ -115,22 +115,29 @@ class LLMCausalGraph:
 
     def to_belief_graph(self) -> BeliefGraph:
         """Convert to the legacy BeliefGraph format for downstream report generators."""
-        from belief_graph.node_evidence_matcher import _load_docs_from_artifacts, NodeEvidenceMatcher
-        
-        # Load ingested documents for this event to assign actual news timestamps to abstract LLM nodes
-        docs = _load_docs_from_artifacts(self.event_id)
-        node_queries = [f"{n.label}: {n.description}" for n in self.nodes]
-        doc_texts = [(d.summary or d.raw_text or "")[:1000] for d in docs]
-        
+        # Try to load ingested documents for timestamp assignment, but don't fail if
+        # sentence_transformers or other ML deps are unavailable (e.g., in scheduler container)
+        docs = []
         best_doc_for_node = {}
-        if docs:
-            matcher = NodeEvidenceMatcher()
-            matches = matcher.match(node_queries, doc_texts)
-            best_sim_for_node = {}
-            for doc_idx, node_idx, sim in matches:
-                if sim > best_sim_for_node.get(node_idx, 0):
-                    best_sim_for_node[node_idx] = sim
-                    best_doc_for_node[node_idx] = docs[doc_idx]
+        try:
+            from belief_graph.node_evidence_matcher import _load_docs_from_artifacts, NodeEvidenceMatcher
+            docs = _load_docs_from_artifacts(self.event_id)
+            node_queries = [f"{n.label}: {n.description}" for n in self.nodes]
+            doc_texts = [(d.summary or d.raw_text or "")[:1000] for d in docs]
+
+            if docs:
+                matcher = NodeEvidenceMatcher()
+                matches = matcher.match(node_queries, doc_texts)
+                best_sim_for_node = {}
+                for doc_idx, node_idx, sim in matches:
+                    if sim > best_sim_for_node.get(node_idx, 0):
+                        best_sim_for_node[node_idx] = sim
+                        best_doc_for_node[node_idx] = docs[doc_idx]
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"Evidence matching unavailable for {self.event_id} (non-fatal): {e}"
+            )
 
         belief_node = BeliefNode(
             belief_id=self.belief_node_id,
@@ -260,7 +267,7 @@ Return this EXACT JSON (no markdown, no extra keys):
       "layer": 1,
       "event_type": "policy|economic|signal|narrative|legal|market",
       "actors": ["Actor1", "Actor2"],
-      "description": "1-2 sentence explanation of this event and why it matters.",
+      "description": "A detailed explanation (~150-200 words) covering: (1) What this factor is about, (2) Why it matters for the market outcome, (3) What kind of news or developments would indicate change on this factor, (4) Key entities, organizations, or metrics involved, (5) Brief historical context. This description will be used for semantic matching against incoming news articles, so include specific terminology and keywords that relevant news would contain.",
       "direction": "positive|negative|ambiguous",
       "probability": 65
     }}
@@ -390,7 +397,25 @@ class LLMCausalGraphGenerator:
             raise
 
         # Parse and return
-        return self._parse_response(raw, event)
+        graph = self._parse_response(raw, event)
+
+        # ── Step 3: Compute embeddings for node descriptions ──────────────
+        # Pre-compute embeddings so pgvector can do fast cosine similarity
+        # when mapping RSS articles to causal nodes.
+        try:
+            from sentence_transformers import SentenceTransformer
+            embed_model = SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
+            for node in graph.nodes:
+                if node.is_belief:
+                    continue
+                text_to_embed = f"{node.label}. {node.description}" if node.description else node.label
+                embedding = embed_model.encode(text_to_embed, normalize_embeddings=True)
+                node.detail_data["description_embedding"] = embedding.tolist()
+            logger.info(f"Computed embeddings for {len(graph.nodes) - 1} causal nodes")
+        except Exception as e:
+            logger.warning(f"Could not compute node embeddings (non-fatal): {e}")
+
+        return graph
 
     def _parse_response(self, raw: dict, event: Event) -> LLMCausalGraph:
         """Parse and validate the LLM response into a LLMCausalGraph."""
@@ -567,24 +592,15 @@ if __name__ == "__main__":
         from integrations.llm_client import LLMClient
         client = LLMClient.from_env()
         generator = LLMCausalGraphGenerator(client=client)
-        
+
         # 1) Generate the raw graph
         graph = generator.generate(event)
-        
-        # 2) Write to PostgreSQL
-        from belief_graph.causal_graph_db import CausalGraphDBWriter
-        writer = CausalGraphDBWriter.from_env()
-        market_id = writer.get_market_id(args.event)
-        if not market_id:
-            logger.error(f"Cannot save graph: No market found in DB for event {args.event}")
-            sys.exit(1)
-        writer.write(graph=graph, market_id=market_id, force=True)
-        
-        # 3) Also save to legacy local JSON GraphStorage for the report generator
+
+        # 2) Save as pipeline artifact (read by PipelineService.ingest_from_files)
         from belief_graph.storage import get_storage
         storage = get_storage()
         storage.save(graph.to_belief_graph(), overwrite=True)
-        
+
         logger.info(f"Successfully generated and saved graph for {args.event}")
     except Exception as e:
         logger.error(f"Failed to generate causal graph: {e}", exc_info=True)

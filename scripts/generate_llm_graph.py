@@ -1,10 +1,10 @@
 """
 LLM Causal Graph Generator — CLI Script
 
-Generates an LLM causal graph for one or more events and stores it to
-the PostgreSQL DB. Designed to run at event registration time (once per
-event), and is IDEMPOTENT — re-running for the same event is a no-op
-unless --force is passed.
+Generates an LLM causal graph for one or more events and stores it as a
+pipeline artifact in PostgreSQL. The scheduler's Phase 2 async backend sync
+(PipelineService.ingest_from_files) reads the artifact and populates the
+causal_graphs / causal_nodes / causal_edges tables.
 
 Usage:
     # Generate for a specific event
@@ -27,7 +27,7 @@ Usage:
 
 Environment variables required:
     GEMINI_API_KEY     — Google Gemini API key
-    CAUSAL_DB_URL      — PostgreSQL URL (optional, defaults to local dev)
+    DATABASE_URL_SYNC  — PostgreSQL URL (optional, defaults to local dev)
 """
 
 import argparse
@@ -46,6 +46,46 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+_DEFAULT_DB_URL = "postgresql://causal:causal@localhost:5432/causal_interface"
+
+
+def _get_db_url() -> str:
+    return os.getenv("DATABASE_URL_SYNC") or _DEFAULT_DB_URL
+
+
+def _lookup_market_id(event_id: str) -> str | None:
+    """Look up market UUID for an event_id."""
+    import psycopg2
+    try:
+        with psycopg2.connect(_get_db_url()) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM markets WHERE event_id = %s LIMIT 1", (event_id,))
+                row = cur.fetchone()
+                return str(row[0]) if row else None
+    except Exception as e:
+        logger.error(f"Failed to look up market for {event_id}: {e}")
+        return None
+
+
+def _lookup_graph_id(event_id: str) -> str | None:
+    """Look up the most recent system graph ID for an event."""
+    import psycopg2
+    try:
+        with psycopg2.connect(_get_db_url()) as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT cg.id FROM causal_graphs cg
+                    JOIN markets m ON cg.market_id = m.id
+                    WHERE m.event_id = %s AND cg.is_system = TRUE
+                    ORDER BY cg.created_at DESC LIMIT 1
+                """, (event_id,))
+                row = cur.fetchone()
+                return str(row[0]) if row else None
+    except Exception as e:
+        logger.error(f"Failed to look up graph for {event_id}: {e}")
+        return None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -148,22 +188,17 @@ def process_event(event, args) -> bool:
     Returns True on success, False on error.
     """
     from belief_graph.llm_causal_generator import LLMCausalGraphGenerator
-    from belief_graph.causal_graph_db import CausalGraphDBWriter
 
     logger.info(f"Processing event: {event.event_id}")
 
     # ── Enrich-only mode: skip graph generation ─────────────────────────────
     if getattr(args, "enrich_only", False):
-        writer = CausalGraphDBWriter.from_env()
-        try:
-            market_id = writer.get_market_id(event.event_id)
-            graph_id = writer.get_existing_graph_id(event.event_id)
-            if not graph_id:
-                logger.error(f"No existing graph for {event.event_id} — run without --enrich-only first")
-                return False
-            return run_enrichment(event.event_id, graph_id, market_id, args.dry_run)
-        finally:
-            writer.close()
+        market_id = _lookup_market_id(event.event_id)
+        graph_id = _lookup_graph_id(event.event_id)
+        if not graph_id:
+            logger.error(f"No existing graph for {event.event_id} — run without --enrich-only first")
+            return False
+        return run_enrichment(event.event_id, graph_id, market_id, args.dry_run)
 
     # ── Step 1: Generate graph via LLM ───────────────────────────────────────
     try:
@@ -180,52 +215,32 @@ def process_event(event, args) -> bool:
         logger.info("DRY RUN — skipping DB write.")
         return True
 
-    # ── Step 3: Persist to DB ────────────────────────────────────────────────
+    # ── Step 3: Save as pipeline artifact ─────────────────────────────────────
+    # The scheduler's Phase 2 async sync (PipelineService.ingest_from_files)
+    # reads this artifact and populates causal_graphs/nodes/edges tables.
     try:
-        writer = CausalGraphDBWriter.from_env()
+        from belief_graph.storage import get_storage
+        storage = get_storage()
+        belief_graph = graph.to_belief_graph()
+        storage.save(belief_graph, overwrite=args.force)
+        logger.info(f"✓ Saved belief_graph artifact for {event.event_id}")
     except Exception as e:
-        logger.error(f"DB connection failed: {e}")
+        logger.error(f"Failed to save graph artifact: {e}")
         return False
-
-    graph_id = None
-    try:
-        market_id = writer.get_market_id(event.event_id)
-        if not market_id:
-            logger.warning(
-                f"No market found for event_id={event.event_id}. "
-                "The event must be registered in the markets table first. "
-                "Skipping DB write."
-            )
-            return False
-
-        graph_id, was_new = writer.write(graph, market_id=market_id, force=args.force)
-        
-        # Save to legacy local JSON GraphStorage for the report generator
-        try:
-            from belief_graph.storage import get_storage
-            storage = get_storage()
-            storage.save(graph.to_belief_graph(), overwrite=True)
-            logger.info("✓ Saved generated graph to local JSON storage for legacy report generation.")
-        except Exception as e:
-            logger.error(f"Failed to save local JSON graph: {e}")
-
-        if was_new:
-            logger.info(f"✓ Saved new causal graph to DB: graph_id={graph_id}")
-        else:
-            logger.info(
-                f"✓ Graph already exists (graph_id={graph_id}). "
-                "Pass --force to regenerate."
-            )
-
-    except Exception as e:
-        logger.error(f"DB write failed for {event.event_id}: {e}")
-        return False
-    finally:
-        writer.close()
 
     # ── Step 4: Evidence enrichment (optional) ───────────────────────────────
-    if getattr(args, "enrich", False) and graph_id:
-        run_enrichment(event.event_id, graph_id, market_id, args.dry_run)
+    if getattr(args, "enrich", False):
+        # Graph may not be in causal_graphs yet (Path 2 hasn't run),
+        # but enrichment operates on the artifact + pipeline docs directly.
+        graph_id = _lookup_graph_id(event.event_id)
+        market_id = _lookup_market_id(event.event_id)
+        if graph_id and market_id:
+            run_enrichment(event.event_id, graph_id, market_id, args.dry_run)
+        else:
+            logger.info(
+                "Skipping enrichment — graph not yet in causal_graphs table. "
+                "It will be populated by the scheduler's async backend sync."
+            )
 
     return True
 

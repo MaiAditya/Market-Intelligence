@@ -261,13 +261,13 @@ class NodeEvidenceMatcher:
         similarity_threshold: float = _SIMILARITY_THRESHOLD,
         max_docs_per_node: int = _MAX_DOCS_PER_NODE,
     ):
-        self.db_url = db_url or os.getenv("CAUSAL_DB_URL", _DEFAULT_DB_URL)
+        self.db_url = db_url or os.getenv("DATABASE_URL_SYNC") or _DEFAULT_DB_URL
         self.threshold = similarity_threshold
         self.max_docs_per_node = max_docs_per_node
 
     @classmethod
     def from_env(cls, **kwargs) -> "NodeEvidenceMatcher":
-        return cls(db_url=os.getenv("CAUSAL_DB_URL", _DEFAULT_DB_URL), **kwargs)
+        return cls(db_url=os.getenv("DATABASE_URL_SYNC") or _DEFAULT_DB_URL, **kwargs)
 
     def match(
         self,

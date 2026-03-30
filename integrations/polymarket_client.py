@@ -80,64 +80,85 @@ class PolymarketClient:
             MarketData or None if not found
         """
         try:
-            # Try gamma API for event data
+            # Strategy 1: Try /events?slug= (works for parent event slugs)
             url = f"{self.GAMMA_URL}/events?slug={slug}"
             response = self._session.get(url, timeout=self.timeout)
-            
-            if response.status_code != 200:
-                logger.warning(f"Failed to fetch market {slug}: HTTP {response.status_code}")
-                return None
-            
-            data = response.json()
-            
-            if not data:
-                logger.warning(f"No market found for slug: {slug}")
-                return None
-            
-            # Handle both single event and list response
-            event = data[0] if isinstance(data, list) else data
-            
-            # Extract market info
-            markets = event.get("markets", [])
-            if not markets:
-                # Single market event
-                probability = self._extract_probability(event)
-                return MarketData(
-                    slug=slug,
-                    question=event.get("title", ""),
-                    probability=probability,
-                    volume=float(event.get("volume", 0) or 0),
-                    liquidity=float(event.get("liquidity", 0) or 0),
-                    start_date=(
-                        self._parse_date(event.get("startDate")) or
-                        self._parse_date(event.get("createdAt")) or
-                        self._parse_date(event.get("creationDate"))
-                    ),
-                    end_date=self._parse_date(event.get("endDate")),
-                    outcome_prices={"yes": probability, "no": 1 - probability},
-                    fetched_at=_utc_now()
-                )
-            
-            # Multi-market event - get primary market
-            primary_market = markets[0]
-            probability = self._extract_probability(primary_market)
-            
-            return MarketData(
-                slug=slug,
-                question=event.get("title", primary_market.get("question", "")),
-                probability=probability,
-                volume=float(primary_market.get("volume", 0) or 0),
-                liquidity=float(primary_market.get("liquidity", 0) or 0),
-                start_date=(
-                    self._parse_date(event.get("startDate")) or
-                    self._parse_date(event.get("createdAt")) or
-                    self._parse_date(event.get("creationDate"))
-                ),
-                end_date=self._parse_date(event.get("endDate")),
-                outcome_prices={"yes": probability, "no": 1 - probability},
-                fetched_at=_utc_now()
-            )
-            
+
+            if response.status_code == 200:
+                data = response.json()
+                if data:
+                    # Handle both single event and list response
+                    event = data[0] if isinstance(data, list) else data
+
+                    # Extract market info
+                    markets = event.get("markets", [])
+                    if not markets:
+                        # Single market event
+                        probability = self._extract_probability(event)
+                        return MarketData(
+                            slug=slug,
+                            question=event.get("title", ""),
+                            probability=probability,
+                            volume=float(event.get("volume", 0) or 0),
+                            liquidity=float(event.get("liquidity", 0) or 0),
+                            start_date=(
+                                self._parse_date(event.get("startDate")) or
+                                self._parse_date(event.get("createdAt")) or
+                                self._parse_date(event.get("creationDate"))
+                            ),
+                            end_date=self._parse_date(event.get("endDate")),
+                            outcome_prices={"yes": probability, "no": 1 - probability},
+                            fetched_at=_utc_now()
+                        )
+
+                    # Multi-market event - get primary market
+                    primary_market = markets[0]
+                    probability = self._extract_probability(primary_market)
+
+                    return MarketData(
+                        slug=slug,
+                        question=event.get("title", primary_market.get("question", "")),
+                        probability=probability,
+                        volume=float(primary_market.get("volume", 0) or 0),
+                        liquidity=float(primary_market.get("liquidity", 0) or 0),
+                        start_date=(
+                            self._parse_date(event.get("startDate")) or
+                            self._parse_date(event.get("createdAt")) or
+                            self._parse_date(event.get("creationDate"))
+                        ),
+                        end_date=self._parse_date(event.get("endDate")),
+                        outcome_prices={"yes": probability, "no": 1 - probability},
+                        fetched_at=_utc_now()
+                    )
+
+            # Strategy 2: Try /markets?slug= (works for individual market slugs)
+            mkt_url = f"{self.GAMMA_URL}/markets?slug={slug}"
+            mkt_response = self._session.get(mkt_url, timeout=self.timeout)
+
+            if mkt_response.status_code == 200:
+                mkt_data = mkt_response.json()
+                if isinstance(mkt_data, list) and mkt_data:
+                    market = mkt_data[0]
+                    probability = self._extract_probability(market)
+                    return MarketData(
+                        slug=slug,
+                        question=market.get("question", market.get("title", "")),
+                        probability=probability,
+                        volume=float(market.get("volumeNum") or market.get("volume", 0) or 0),
+                        liquidity=float(market.get("liquidityNum") or market.get("liquidity", 0) or 0),
+                        start_date=(
+                            self._parse_date(market.get("startDate")) or
+                            self._parse_date(market.get("createdAt")) or
+                            self._parse_date(market.get("creationDate"))
+                        ),
+                        end_date=self._parse_date(market.get("endDate")),
+                        outcome_prices={"yes": probability, "no": 1 - probability},
+                        fetched_at=_utc_now()
+                    )
+
+            logger.warning(f"No market found for slug: {slug}")
+            return None
+
         except requests.exceptions.RequestException as e:
             logger.error(f"Request error fetching market {slug}: {e}")
             return None

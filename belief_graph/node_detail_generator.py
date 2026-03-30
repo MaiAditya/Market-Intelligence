@@ -237,7 +237,7 @@ class NodeDetailGenerator:
         max_parallel: int = _MAX_PARALLEL_NODES,
     ):
         self.client = llm_client
-        self.db_url = db_url or os.getenv("CAUSAL_DB_URL", _DEFAULT_DB_URL)
+        self.db_url = db_url or os.getenv("DATABASE_URL_SYNC") or _DEFAULT_DB_URL
         self.top_k = top_k_evidence
         self.max_parallel = max_parallel
 
@@ -381,6 +381,52 @@ class NodeDetailGenerator:
                 logger.info(f"  ✓ Wrote detail for {node_id} (grounded={has_evidence})")
 
             return detail
+
+        finally:
+            db.close()
+
+    def regenerate_single_node(
+        self,
+        event_id: str,
+        graph_id: str,
+        node_id: str,
+        dry_run: bool = False,
+    ) -> Optional[Dict]:
+        """
+        Regenerate detail_data for a single node using latest evidence.
+
+        Called by the RSS pipeline when a new high-confidence cluster maps
+        to a node, providing updated evidence for the node's analysis.
+
+        Args:
+            event_id: Market event ID (e.g. "fed-rate-hike-q2-2026")
+            graph_id: UUID of the causal_graph
+            node_id: The specific node to regenerate
+            dry_run: If True, generate but don't write to DB
+
+        Returns:
+            Generated detail_data dict, or None if failed.
+        """
+        db = _DB(self.db_url)
+        try:
+            nodes = db.fetch_nodes_with_edges(graph_id)
+            target = None
+            for n in nodes:
+                if n["node_id"] == node_id:
+                    target = n
+                    break
+
+            if not target:
+                logger.warning(f"Node {node_id} not found in graph {graph_id}")
+                return None
+
+            if target.get("event_type") == "belief":
+                logger.debug(f"Skipping belief node {node_id}")
+                return None
+
+            target["_graph_id"] = graph_id
+            logger.info(f"Regenerating detail for node {node_id} ({target.get('label', '')[:40]})")
+            return self._generate_node_detail(target, event_id, self.db_url, dry_run)
 
         finally:
             db.close()
