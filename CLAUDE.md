@@ -2,17 +2,41 @@
 
 ## Overview
 
-Event-centric intelligence system for prediction markets. Ingests multi-source data (web, Reddit, Twitter), maps documents to tracked events via a 3-stage filter, extracts structured signals, calculates probability deltas, and builds causal belief graphs. Core analysis uses BERT-only models — no LLMs except in optional Phase 2 graph enrichment.
+Event-centric intelligence system for prediction markets. Originally designed as an 8-stage BERT pipeline (ingest → NER → map → signal → delta), now primarily used for its **belief graph** subsystem. The scheduler replaced the old multi-source ingestion with RSS-based ingestion and replaced 3-stage event mapping with pgvector semantic matching.
+
+## Live vs Legacy Status
+
+> **IMPORTANT:** The scheduler (`Causal_Interface/scheduler/run_scheduler.py`) is the only autonomous component. It does NOT use the 8-stage pipeline. The pipeline stages below are available for **manual CLI testing only**.
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| `pipeline/event_registry.py` | **LIVE** | Used by PipelineService for event lookup |
+| `belief_graph/` (24 files) | **LIVE** | graph_builder, storage, llm_causal_generator, node_detail_generator used by scheduler |
+| `integrations/llm_client.py` | **LIVE** | Gemini 2.5 Flash for graph enrichment |
+| `config/events.json` | **LIVE** | Event definitions |
+| `pipeline/ingestion/` | **LEGACY** | Replaced by RSS pipeline (`backend/services/rss/`) |
+| `pipeline/query_generator.py` | **LEGACY** | Not used by scheduler |
+| `pipeline/event_mapper.py` | **LEGACY** | 3-stage gate replaced by pgvector cosine matching |
+| `pipeline/signal_extractor.py` | **LEGACY** | Not used by scheduler |
+| `pipeline/delta_engine.py` | **LEGACY** | Not used by scheduler |
+| `pipeline/normalizer.py` | **LEGACY** | Only used by `generate_event_market_report.py` script |
+| `pipeline/time_extractor.py` | **LEGACY** | Appears unused everywhere |
+| `models/ner.py` | **LEGACY** | BERT NER not loaded by scheduler |
+| `models/signal_classifier.py` | **LEGACY** | Not loaded by scheduler |
+| `models/dependency_classifier.py` | **LEGACY** | Not loaded by scheduler |
+| `models/semantic_relevance.py` | **LEGACY** | Scheduler loads sentence-transformers directly |
+| `api/` | **LEGACY** | Standalone REST API not used in production |
+| `cli/` | **LEGACY** | Manual testing/dev only |
 
 ## Core Principles
 
 - **Events are primary objects** — data flows from events, never pushed into events
 - **Ingest wide, filter strictly** — collect broadly, apply rigorous 3-stage filtering
 - **No final probabilities** — only output delta ranges with confidence
-- **BERT-only for core logic** — NER, classification, similarity via transformer models
+- **BERT-only for core logic** — NER, classification, similarity via transformer models (LEGACY — live system uses LLM + pgvector)
 - **Transparent reasoning** — all intermediate outputs stored as JSONB artifacts
 
-## Pipeline Architecture (8 Stages)
+## Pipeline Architecture (8 Stages) — LEGACY, manual CLI only
 
 ```
 Event Registry → Query Generation → Data Ingestion → Normalization
@@ -22,34 +46,37 @@ Event Registry → Query Generation → Data Ingestion → Normalization
 
 ### Stage Details
 
-| Stage | Module | Purpose |
-|-------|--------|---------|
-| 1 | `pipeline/event_registry.py` | Load events from `config/events.json`, validate, provide lookup |
-| 2 | `pipeline/query_generator.py` | Template-based query expansion (official, journalist, public_opinion, critical) |
-| 3 | `pipeline/ingestion/ingestor.py` | Orchestrate Reddit (PRAW), Twitter (Nitter), Web (DuckDuckGo + BS4) |
-| 4 | `pipeline/normalizer.py` | Clean text, detect source type, infer author type, deduplicate |
-| 5 | `pipeline/entity_extractor.py` (via `models/ner.py`) | BERT NER + regex model name detection |
-| 6 | `pipeline/event_mapper.py` | **3-stage gate:** entity match → semantic relevance (adaptive: 0.35–0.45 by event type) → dependency classification |
-| 7 | `pipeline/signal_extractor.py` | Extract signal type, direction, magnitude, confidence |
-| 8 | `pipeline/delta_engine.py` | Rule-based aggregation: `Σ(magnitude × confidence × origin_weight × type_weight × direction_mod × time_weight)` / total_weight → scaled to delta range |
+| Stage | Module | Status | Purpose |
+|-------|--------|--------|---------|
+| 1 | `pipeline/event_registry.py` | **LIVE** | Load events from `config/events.json`, validate, provide lookup |
+| 2 | `pipeline/query_generator.py` | LEGACY | Template-based query expansion (official, journalist, public_opinion, critical) |
+| 3 | `pipeline/ingestion/ingestor.py` | LEGACY | Orchestrate Reddit (PRAW), Twitter (Nitter), Web (DuckDuckGo + BS4) — replaced by RSS pipeline |
+| 4 | `pipeline/normalizer.py` | LEGACY | Clean text, detect source type, infer author type, deduplicate |
+| 5 | `pipeline/entity_extractor.py` (via `models/ner.py`) | LEGACY | BERT NER + regex model name detection |
+| 6 | `pipeline/event_mapper.py` | LEGACY | 3-stage gate — replaced by pgvector cosine matching in scheduler |
+| 7 | `pipeline/signal_extractor.py` | LEGACY | Extract signal type, direction, magnitude, confidence |
+| 8 | `pipeline/delta_engine.py` | LEGACY | Rule-based aggregation to delta range |
 
-### 3-Stage Event Mapping (Critical Path)
+### 3-Stage Event Mapping — LEGACY (replaced by pgvector)
+The scheduler now maps clusters to graph nodes via pgvector cosine similarity (threshold 0.45) instead of the 3-stage gate. The original pipeline is still available via CLI:
 1. **Entity Gate:** Document must contain ≥1 primary entity AND ≥1 secondary/alias — hard filter (with soft fallback at 0.85 semantic similarity)
 2. **Semantic Relevance:** Cosine similarity via all-mpnet-base-v2 with adaptive thresholds by event type: regulation=0.35, model_release=0.45, capability/market/general=0.40
 3. **Dependency Classification:** Zero-shot multi-label classification into: training, compute, safety, regulation, executive_statement, public_narrative
 
 ## ML Models (`models/`)
 
-| Model | File | HuggingFace ID | Purpose |
-|-------|------|----------------|---------|
-| NER | `ner.py` | dslim/bert-base-NER | Entity extraction |
-| Embeddings | `semantic_relevance.py` | sentence-transformers/all-mpnet-base-v2 | Document-event similarity |
-| Dependency | `dependency_classifier.py` | bert-base-uncased | Zero-shot dependency classification |
-| Signal | `signal_classifier.py` | roberta-base | Signal type/direction classification |
+| Model | File | HuggingFace ID | Status | Purpose |
+|-------|------|----------------|--------|---------|
+| Embeddings | `semantic_relevance.py` | sentence-transformers/all-mpnet-base-v2 | **LIVE** (loaded by scheduler directly) | pgvector embeddings for cluster-to-node mapping |
+| Summarizer | `ingestion/article_summarizer.py` | sshleifer/distilbart-cnn-12-6 (CTranslate2 INT8) | **LIVE** | Fast CPU article summarization in RSS pipeline |
+| NER | `ner.py` | dslim/bert-base-NER | LEGACY | Entity extraction (manual CLI only) |
+| Dependency | `dependency_classifier.py` | bert-base-uncased | LEGACY | Zero-shot dependency classification (manual CLI only) |
+| Signal | `signal_classifier.py` | roberta-base | LEGACY | Signal type/direction classification (manual CLI only) |
 
 - **Model Manager** (`model_manager.py`): Lazy loading with cache directory
 - **Config:** `config/model_config.json` — thresholds, cache dir, offline mode
 - **All models run in offline mode** (`local_files_only: true`) — models must be pre-downloaded to `models/cache/`
+- **LLM Client** (`integrations/llm_client.py`): Optional Google Gemini 2.5 Flash integration for Phase 2 graph enrichment and node detail generation. Uses `google-genai` SDK with web-search grounding.
 
 ### Thresholds (`config/model_config.json` + adaptive overrides in `event_mapper.py`)
 - `semantic_relevance` — adaptive by event type: regulation=0.35, model_release=0.45, capability/market/general=0.40 (global default=0.40)
@@ -58,9 +85,9 @@ Event Registry → Query Generation → Data Ingestion → Normalization
 - `dependency_threshold: 0.3` — dependency classification minimum
 - `soft_entity_gate: 0.85` — semantic similarity fallback when hard entity gate fails
 
-## Belief Graph (`belief_graph/`)
+## Belief Graph (`belief_graph/`) — LIVE, primary subsystem
 
-The largest subsystem (24 files, ~8.3k LOC). Builds causal DAGs from extracted events and signals.
+The largest subsystem (24 files, ~8.3k LOC). Builds causal DAGs from extracted events and signals. **This is the main LIVE component** used by the scheduler for graph generation and enrichment.
 
 ### Key Modules
 | Module | Purpose |
@@ -103,7 +130,9 @@ Model names, thresholds, cache directory, offline mode settings.
 - **Artifact types:** normalized_documents, extracted_entities, event_mappings, signals, analysis, belief_graph
 - **Model cache:** `models/cache/` (HuggingFace transformers, pre-downloaded)
 
-## CLI (`cli/`)
+## CLI (`cli/`) — LEGACY, manual testing/dev only
+
+> **Not used by the scheduler.** These commands are for manual testing and development. The scheduler runs its own RSS + discovery + mapping pipeline instead.
 
 ```bash
 # Core analysis
@@ -128,7 +157,9 @@ python -m cli.run_pipeline market-report --event <id>     # Generate market repo
 python -m cli.run_pipeline warm-models                    # Pre-load all models into memory
 ```
 
-## API (`api/`)
+## API (`api/`) — LEGACY, not used in production
+
+> **This standalone API is NOT used by the production system.** The backend (`Causal_Interface/backend/`) serves all REST endpoints. This API exists for standalone testing only.
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|

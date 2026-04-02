@@ -45,6 +45,9 @@ isort>=5.13.0
 google-generativeai>=0.8.0
 psycopg2-binary>=2.9.0
 
+# CTranslate2 — 2-4x faster CPU inference for BART summarization (INT8)
+ctranslate2>=4.7.0
+
 # Optional: For better model performance
 # accelerate>=0.26.0
 # bitsandbytes>=0.42.0  # For quantization

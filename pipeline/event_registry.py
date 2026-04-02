@@ -124,25 +124,86 @@ class EventRegistry:
         
         self._load_events()
     
+    # Fallback dependency descriptions used when events.json is absent.
+    # These are the canonical dependency labels — they don't change with markets.
+    _FALLBACK_DEPENDENCY_DESCRIPTIONS: Dict[str, str] = {
+        "training": "Model training progress, dataset preparation, convergence milestones",
+        "compute": "GPU/TPU availability, infrastructure scaling, chip supply",
+        "safety": "Red-teaming, alignment research, jailbreak testing, safety evaluations",
+        "regulation": "Laws, policy decisions, compliance requirements, government oversight",
+        "executive_statement": "CEO/CTO announcements, press releases, official statements",
+        "public_narrative": "Media coverage, public sentiment, hype cycles, narrative shifts",
+        "performance": "Athletic or competitive performance metrics and results",
+        "injuries": "Player or team injury reports and health status",
+        "transfers": "Player transfers, team composition changes",
+        "schedule": "Event scheduling, fixture lists, calendar changes",
+        "form": "Recent performance trends and momentum",
+        "standings": "League tables, rankings, tournament brackets",
+        "momentum": "Winning/losing streaks, psychological momentum",
+        "playoffs": "Playoff qualification, bracket outcomes",
+        "polling": "Survey data, approval ratings, voter sentiment",
+        "fundraising": "Campaign finance, donor activity, funding rounds",
+        "endorsements": "Public endorsements from key figures",
+        "legislation": "Bills, laws, regulatory changes under consideration",
+        "economic_data": "GDP, trade balance, economic indicators",
+        "market_reaction": "Financial market responses to events",
+        "geopolitics": "International relations, diplomatic events, conflicts",
+        "us_monetary_policy": "Federal Reserve decisions, monetary policy signals",
+        "inflation_data": "CPI, PPI, inflation measurements",
+        "employment_data": "Jobs reports, unemployment figures",
+        "interest_rates": "Central bank rate decisions and expectations",
+        "central_bank": "Central bank communications and policy actions",
+        "fed_policy": "Federal Reserve policy stance and communications",
+        "cpi": "Consumer Price Index reports",
+        "gdp": "Gross Domestic Product reports and revisions",
+        "news": "General news coverage and developments",
+        "sentiment": "Public and market sentiment indicators",
+        "social_media": "Social media discussions and viral trends",
+        "media_coverage": "Traditional and digital media coverage intensity",
+    }
+
     def _load_events(self) -> None:
-        """Load and validate events from configuration file."""
+        """Load and validate events from configuration file.
+
+        If events.json is not found, the registry starts empty and relies
+        entirely on dynamic synthesis from Polymarket for any event lookups.
+        This allows the system to run without manual event configuration.
+        """
         logger.debug(f"Loading events from: {self.config_path}")
         if not self.config_path.exists():
-            raise FileNotFoundError(f"Event configuration not found: {self.config_path}")
-        
+            logger.warning(
+                f"events.json not found at {self.config_path} — "
+                f"starting with empty registry (dynamic synthesis only). "
+                f"All markets will be resolved dynamically from Polymarket."
+            )
+            self.events = {}
+            self.dependency_descriptions = dict(self._FALLBACK_DEPENDENCY_DESCRIPTIONS)
+            return
+
         with open(self.config_path, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-        
-        # Load dependency descriptions
-        self.dependency_descriptions = config.get("dependency_descriptions", {})
-        
+            content = f.read().strip()
+        if not content:
+            logger.warning(
+                f"events.json at {self.config_path} is empty — "
+                f"starting with empty registry (dynamic synthesis only)."
+            )
+            self.events = {}
+            self.dependency_descriptions = dict(self._FALLBACK_DEPENDENCY_DESCRIPTIONS)
+            return
+        config = json.loads(content)
+
+        # Load dependency descriptions (fall back to hardcoded if not in file)
+        self.dependency_descriptions = config.get(
+            "dependency_descriptions", dict(self._FALLBACK_DEPENDENCY_DESCRIPTIONS)
+        )
+
         # Load and validate each event
         for event_data in config.get("events", []):
             event = self._parse_event(event_data)
             self._validate_event(event)
             self.events[event.event_id] = event
             logger.debug(f"Loaded event: {event.event_id}")
-        
+
         logger.info(f"Loaded {len(self.events)} events from registry")
     
     def _parse_event(self, data: dict) -> Event:

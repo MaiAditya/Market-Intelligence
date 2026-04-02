@@ -157,7 +157,7 @@ class LLMCausalGraph:
             source = "LLM"
             url = None
             doc_id = None
-            raw_title = n.description
+            raw_title = n.label  # use the short LLM-generated title by default
 
             if best_doc:
                 if best_doc.published_at:
