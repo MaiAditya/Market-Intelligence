@@ -224,6 +224,7 @@ SYSTEM_INSTRUCTION = """You are an expert causal reasoning system that builds la
 
 Given a Polymarket prediction market question, you generate a LAYERED causal graph of REAL-WORLD events that meaningfully shift the probability of that outcome.
 
+
 CRITICAL GRAPH STRUCTURE RULE — LAYERED HIERARCHY ONLY:
 - Nodes must form a strict top-down hierarchy with 2-4 distinct layers.
 - Layer 0: The belief node (the Polymarket question itself). Added automatically — do NOT include it.
@@ -237,7 +238,11 @@ CRITICAL GRAPH STRUCTURE RULE — LAYERED HIERARCHY ONLY:
   ❌ WRONG: Layer 2 node → belief
   ❌ WRONG: Layer 3 node → Layer 1 node
   ✅ CORRECT: Layer 2 node → Layer 1 node → belief
-
+-One node of a lower hierarchy shouldn't connect to two nodes of a higher hierarchy 
+    Example :
+    Each Layer 2 node should be only connected to one layer 1 node and multiple layer 3 nodes.
+    Each Layer 3 node should be only connected to one layer 2 node.
+    Each Layer 1 node should be only connected with one Layer 0 node and multiple layer 2 nodes.
 - Focus on events with HIGH causal impact (not just correlated).
 - Each node is a distinct real-world event category, not a single news article.
 - Edges represent causal influence: source event → affects → target.
@@ -300,6 +305,7 @@ IMPORTANT EDGE CONSTRAINTS:
 - probabilityBreakdown items must sum to approximately the node's probability.
 - Do NOT include the belief node in the nodes array — it is added automatically.
 - sensitivityAnalysis: for each node, list 1-3 OTHER nodes that this node most affects.
+-Make sure the nodes  on each hierarchy level are Mutually exclusive and collectively exhaustive.
 
 EXAMPLE VALID STRUCTURE (3-layer graph):
   Layer 1: gemini_released_q2 (→ belief), budget_allocated (→ belief)
