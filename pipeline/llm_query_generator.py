@@ -56,6 +56,28 @@ class LLMQueryGenerator:
             raise EnvironmentError(f"LLM API key not found. Set {env_var!r}.")
         return cls(api_key=api_key, **kwargs)
 
+    @staticmethod
+    def _extract_text(response) -> str:
+        """Safely extract text from Gemini responses."""
+        text = getattr(response, "text", None)
+        if isinstance(text, str):
+            stripped = text.strip()
+            if stripped:
+                return stripped
+
+        candidates = getattr(response, "candidates", None) or []
+        parts_text: list[str] = []
+        for candidate in candidates:
+            content = getattr(candidate, "content", None)
+            parts = getattr(content, "parts", None) or []
+            for part in parts:
+                if getattr(part, "thought", False):
+                    continue
+                part_text = getattr(part, "text", None)
+                if isinstance(part_text, str) and part_text.strip():
+                    parts_text.append(part_text.strip())
+        return "\n".join(parts_text).strip()
+
     def generate(
         self,
         event_id: str,
@@ -115,7 +137,10 @@ Return ONLY the JSON array, nothing else."""
                 ),
             )
 
-            text = response.text.strip()
+            text = self._extract_text(response)
+            if not text:
+                logger.warning(f"LLM returned no text for query generation: {event_id}")
+                return []
             queries = json.loads(text)
 
             if isinstance(queries, list) and all(isinstance(q, str) for q in queries):

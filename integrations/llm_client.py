@@ -19,7 +19,9 @@ import logging
 import os
 import re
 import time
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any, List, Optional, Tuple
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,15 @@ logger = logging.getLogger(__name__)
 class LLMError(Exception):
     """Raised when the LLM call fails or returns unparseable output."""
     pass
+
+
+@dataclass
+class GroundingChunk:
+    """One web source surfaced by Gemini's Google Search grounding."""
+    title: str
+    uri: str
+    snippet: Optional[str]
+    domain: str
 
 
 class LLMClient:
@@ -44,8 +55,8 @@ class LLMClient:
         model: str = "gemini-2.5-flash",
         temperature: float = 0.2,
         max_output_tokens: int = 16384,
-        max_retries: int = 3,
-        retry_delay: float = 2.0,
+        max_retries: int = 4,
+        retry_delay: float = 15.0,
     ):
         self.model_name = model
         self.temperature = temperature
@@ -59,6 +70,93 @@ class LLMClient:
         self._types = types
         self._client = genai.Client(api_key=api_key)
         logger.info(f"LLMClient initialised with model={model}")
+
+    def _log_usage_metadata(self, response: Any, *, request_type: str) -> None:
+        """Log Gemini usage metadata when available."""
+        usage = getattr(response, "usage_metadata", None)
+        if usage is None:
+            logger.info(f"[LLM_USAGE] type={request_type} model={self.model_name} usage_metadata=missing")
+            return
+
+        def _pick(obj: Any, *names: str) -> Any:
+            for name in names:
+                if hasattr(obj, name):
+                    return getattr(obj, name)
+                if isinstance(obj, dict) and name in obj:
+                    return obj[name]
+            return None
+
+        prompt_tokens = _pick(usage, "prompt_token_count", "promptTokenCount")
+        output_tokens = _pick(usage, "candidates_token_count", "candidatesTokenCount")
+        total_tokens = _pick(usage, "total_token_count", "totalTokenCount")
+        thoughts_tokens = _pick(usage, "thoughts_token_count", "thoughtsTokenCount")
+        cached_tokens = _pick(usage, "cached_content_token_count", "cachedContentTokenCount")
+
+        logger.info(
+            "[LLM_USAGE] "
+            f"type={request_type} "
+            f"model={self.model_name} "
+            f"prompt_tokens={prompt_tokens} "
+            f"output_tokens={output_tokens} "
+            f"total_tokens={total_tokens} "
+            f"thoughts_tokens={thoughts_tokens} "
+            f"cached_tokens={cached_tokens}"
+        )
+
+    @staticmethod
+    def _extract_text(response: Any) -> str:
+        """Safely extract concatenated text from Gemini responses."""
+        text = getattr(response, "text", None)
+        if isinstance(text, str):
+            stripped = text.strip()
+            if stripped:
+                return stripped
+
+        candidates = getattr(response, "candidates", None) or []
+        text_parts: list[str] = []
+        for candidate in candidates:
+            content = getattr(candidate, "content", None)
+            parts = getattr(content, "parts", None) or []
+            for part in parts:
+                if getattr(part, "thought", False):
+                    continue
+                part_text = getattr(part, "text", None)
+                if isinstance(part_text, str) and part_text.strip():
+                    text_parts.append(part_text.strip())
+
+        return "\n".join(text_parts).strip()
+
+    @staticmethod
+    def _extract_grounding_context(response: Any) -> str:
+        """Build a lightweight context block from grounding metadata when text is absent."""
+        candidates = getattr(response, "candidates", None) or []
+        seen: set[tuple[str, str]] = set()
+        lines: list[str] = []
+
+        for candidate in candidates:
+            metadata = getattr(candidate, "grounding_metadata", None)
+            if not metadata:
+                continue
+
+            chunks = getattr(metadata, "grounding_chunks", None) or []
+            for chunk in chunks:
+                web = getattr(chunk, "web", None)
+                if not web:
+                    continue
+                title = (getattr(web, "title", None) or "").strip()
+                uri = (getattr(web, "uri", None) or "").strip()
+                key = (title, uri)
+                if key in seen or not (title or uri):
+                    continue
+                seen.add(key)
+                if title and uri:
+                    lines.append(f"- {title} ({uri})")
+                elif title:
+                    lines.append(f"- {title}")
+                else:
+                    lines.append(f"- {uri}")
+
+        return "\n".join(lines[:12]).strip()
 
     @classmethod
     def from_env(cls, env_var: str = "GEMINI_API_KEY", **kwargs) -> "LLMClient":
@@ -82,6 +180,23 @@ class LLMClient:
 
         Returns:
             Grounded text summary from the LLM.
+        """
+        text, _chunks = self.search_grounded_summary_with_sources(query)
+        return text
+
+    def search_grounded_summary_with_sources(
+        self, query: str
+    ) -> Tuple[str, List[GroundingChunk]]:
+        """
+        Same as search_grounded_summary but also returns the list of web sources
+        Gemini's Google Search grounding cited.
+
+        Use when callers want to persist the grounded URLs as evidence rows
+        rather than just consuming the synthesized text.
+
+        Returns:
+            (text, chunks) — `text` is the grounded summary (possibly empty);
+            `chunks` is a list of GroundingChunk (title, uri, snippet, domain).
         """
         types = self._types
         tool = types.Tool(google_search=types.GoogleSearch())
@@ -107,11 +222,30 @@ class LLMClient:
                         max_output_tokens=2048,
                     ),
                 )
-                text = response.text.strip()
-                logger.info(
-                    f"Search grounding successful (~{len(text)} chars)"
+                self._log_usage_metadata(response, request_type="search_grounded_summary")
+                chunks = self._extract_grounding_chunks(response)
+                text = self._extract_text(response)
+                if text:
+                    logger.info(
+                        f"Search grounding successful (~{len(text)} chars, "
+                        f"{len(chunks)} sources)"
+                    )
+                    return text, chunks
+
+                grounded_context = self._extract_grounding_context(response)
+                if grounded_context:
+                    logger.info(
+                        "Search grounding returned metadata-only response; "
+                        f"using {len(grounded_context)} chars of grounding context "
+                        f"({len(chunks)} sources)"
+                    )
+                    return grounded_context, chunks
+
+                logger.warning(
+                    "Search grounding returned no usable text or grounding metadata; "
+                    "falling back to model knowledge only"
                 )
-                return text
+                return "", chunks
 
             except Exception as e:
                 last_error = e
@@ -119,12 +253,110 @@ class LLMClient:
                 if attempt < self.max_retries:
                     time.sleep(self.retry_delay * attempt)
 
-        # Non-fatal: fall back to empty context (model uses its training knowledge)
         logger.warning(
             f"Search grounding failed after {self.max_retries} attempts: {last_error}. "
             "Falling back to model knowledge only."
         )
-        return ""
+        return "", []
+
+    @staticmethod
+    def _extract_grounding_chunks(response: Any) -> List[GroundingChunk]:
+        """
+        Build GroundingChunks from Gemini grounding metadata.
+
+        Gemini quirks worth knowing:
+          - `web.title` is the *publisher domain* (e.g. "ibtimes.com"), not
+            the article title. Treat it as the domain.
+          - `web.uri` is a vertexaisearch.cloud.google.com redirect URL, not
+            the original article URL. We persist this URI; users clicking it
+            land on the real article via Google's redirect.
+          - The actual cited text per chunk is reconstructed from
+            `grounding_supports`: each support links a span of the response
+            text to one or more chunk indices. We aggregate those spans into
+            a per-chunk snippet so we have something to display as a headline.
+        """
+        candidates = getattr(response, "candidates", None) or []
+        if not candidates:
+            return []
+
+        # Pull the response text once — supports' segment offsets index into it.
+        response_text = LLMClient._extract_text(response)
+
+        chunks: List[GroundingChunk] = []
+        seen_uris: set[str] = set()
+
+        for candidate in candidates:
+            metadata = getattr(candidate, "grounding_metadata", None)
+            if not metadata:
+                continue
+            raw_chunks = getattr(metadata, "grounding_chunks", None) or []
+            supports = getattr(metadata, "grounding_supports", None) or []
+
+            # Aggregate snippet spans per chunk index (scoped to this candidate)
+            chunk_snippets: dict[int, list[str]] = {}
+            for support in supports:
+                segment = getattr(support, "segment", None)
+                ci_list = getattr(support, "grounding_chunk_indices", None) or []
+                if not segment or not ci_list:
+                    continue
+                seg_text = (getattr(segment, "text", None) or "").strip()
+                if not seg_text:
+                    start = getattr(segment, "start_index", None)
+                    end = getattr(segment, "end_index", None)
+                    if (
+                        isinstance(start, int)
+                        and isinstance(end, int)
+                        and 0 <= start < end <= len(response_text)
+                    ):
+                        seg_text = response_text[start:end].strip()
+                if not seg_text:
+                    continue
+                for ci in ci_list:
+                    if isinstance(ci, int):
+                        chunk_snippets.setdefault(ci, []).append(seg_text)
+
+            for ci, chunk in enumerate(raw_chunks):
+                web = getattr(chunk, "web", None)
+                if not web:
+                    continue
+                web_title = (getattr(web, "title", None) or "").strip()
+                uri = (getattr(web, "uri", None) or "").strip()
+                if not uri or uri in seen_uris:
+                    continue
+                seen_uris.add(uri)
+
+                # web.title is the publisher domain; fall back to URI parse.
+                domain = web_title.lower()
+                if not domain:
+                    try:
+                        netloc = urlparse(uri).netloc.lower()
+                        domain = netloc[4:] if netloc.startswith("www.") else netloc
+                    except Exception:
+                        domain = ""
+
+                spans = chunk_snippets.get(ci, [])
+                # Dedup spans, keep order, cap at 3 to avoid 5kB headlines.
+                seen_spans: set[str] = set()
+                deduped: list[str] = []
+                for s in spans:
+                    if s in seen_spans:
+                        continue
+                    seen_spans.add(s)
+                    deduped.append(s)
+                snippet = " ".join(deduped[:3]) if deduped else None
+
+                # Display title: snippet if present, else domain
+                display_title = snippet or domain or uri
+
+                chunks.append(
+                    GroundingChunk(
+                        title=display_title,
+                        uri=uri,
+                        snippet=snippet,
+                        domain=domain,
+                    )
+                )
+        return chunks
 
     def generate_json(
         self,
@@ -167,7 +399,10 @@ class LLMClient:
                     contents=prompt,
                     config=config,
                 )
-                raw = response.text.strip()
+                self._log_usage_metadata(response, request_type="generate_json")
+                raw = self._extract_text(response)
+                if not raw:
+                    raise LLMError("LLM API returned no text content")
 
                 # Strip markdown code fences if present
                 if raw.startswith("```"):

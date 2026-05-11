@@ -98,7 +98,7 @@ Generate the analysis JSON with this exact schema:
     }}
   }},
   "rumorEvidence": [
-    {{"name": "Source name from evidence", "reliability": 3, "description": "What they reported."}}
+    {{"name": "Article/outlet name from Evidence [1]", "reliability": 3, "description": "What they reported (cite [1])."}}
   ],
   "sensitivityAnalysis": [
     {{"nodeId": "dependent_node_id", "nodeLabel": "Dependent Node Label", "currentProb": 60, "projectedRange": [45, 75]}}
@@ -109,7 +109,7 @@ RULES:
 - impactOnMarket.ifResolvesYes must be positive integer if direction=positive, negative if direction=negative.
 - impactOnMarket.ifResolvesNo must be the opposite sign.
 - probabilityBreakdown items should approximately sum to {probability}%.
-- rumorEvidence: extract actual source names from the evidence summaries.
+- rumorEvidence: MUST have exactly one entry per evidence document provided above. Use the article headline or outlet name as "name". Each entry must reference its evidence number (e.g. [1], [2], [3]).
 - If evidence is limited, extrapolate carefully using world knowledge.
 """
 
@@ -308,8 +308,21 @@ class NodeDetailGenerator:
                     source["url"] = url
                 pub = doc.get("published_at")
                 if pub:
-                    # Convert datetime to ISO string if needed
-                    source["published_at"] = str(pub)[:19]  # "YYYY-MM-DDTHH:MM:SS"
+                    source["published_at"] = str(pub)[:19]
+
+        # Append entries for any evidence docs the LLM missed
+        for i in range(len(sources), len(valid_docs)):
+            doc = valid_docs[i]
+            entry = {
+                "name": doc.get("title") or doc.get("source") or "Source",
+                "reliability": 3,
+                "description": (doc.get("summary") or "")[:200],
+                "url": doc.get("url"),
+            }
+            pub = doc.get("published_at")
+            if pub:
+                entry["published_at"] = str(pub)[:19]
+            sources.append(entry)
 
 
     def _generate_node_detail(

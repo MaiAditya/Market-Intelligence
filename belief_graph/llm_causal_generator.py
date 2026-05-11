@@ -185,7 +185,8 @@ class LLMCausalGraph:
                 scope="global",
                 raw_title=raw_title,
                 url=url,
-                source_doc_id=doc_id
+                source_doc_id=doc_id,
+                description=n.description,
             )
             event_nodes[en.event_id] = en
 

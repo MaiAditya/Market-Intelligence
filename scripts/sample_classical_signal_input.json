@@ -1,0 +1,54 @@
+{
+  "market_question": "Will Congress pass a nationwide AI regulation bill by Q4 2026?",
+  "market_entities": ["Congress", "AI regulation", "Senate", "House"],
+  "documents": [
+    {
+      "id": "d1",
+      "title": "Senate committee advances AI safety bill in bipartisan vote",
+      "body": "Committee approved draft and scheduled floor coordination next week.",
+      "url": "https://www.reuters.com/world/us/senate-ai-bill-advance",
+      "source": "Reuters",
+      "timestamp": "2026-04-14T12:00:00Z"
+    },
+    {
+      "id": "d2",
+      "title": "AP: AI regulation proposal clears key hurdle in Senate",
+      "body": "Officials confirmed support from several undecided senators.",
+      "url": "https://apnews.com/article/ai-regulation-senate-hurdle",
+      "source": "AP News",
+      "timestamp": "2026-04-14T12:30:00Z"
+    },
+    {
+      "id": "d3",
+      "title": "Sources say bill could be delayed by amendment fight",
+      "body": "Unconfirmed reports suggest leadership might postpone floor debate.",
+      "url": "https://x.com/randomaccount/status/12345",
+      "source": "X",
+      "timestamp": "2026-04-14T17:00:00Z"
+    },
+    {
+      "id": "d4",
+      "title": "White House statement backs timeline for AI safeguards",
+      "body": "Official statement says administration expects progress this quarter.",
+      "url": "https://www.whitehouse.gov/briefing-room/statement/ai-safeguards",
+      "source": "White House",
+      "timestamp": "2026-04-14T18:00:00Z"
+    }
+  ],
+  "prices": [
+    {"timestamp": "2026-04-14T09:00:00Z", "price": 0.4630},
+    {"timestamp": "2026-04-14T10:00:00Z", "price": 0.4660},
+    {"timestamp": "2026-04-14T11:00:00Z", "price": 0.4690},
+    {"timestamp": "2026-04-14T12:00:00Z", "price": 0.4720},
+    {"timestamp": "2026-04-14T13:00:00Z", "price": 0.4920},
+    {"timestamp": "2026-04-14T14:00:00Z", "price": 0.5120},
+    {"timestamp": "2026-04-14T15:00:00Z", "price": 0.5150},
+    {"timestamp": "2026-04-14T16:00:00Z", "price": 0.5180},
+    {"timestamp": "2026-04-14T17:00:00Z", "price": 0.5210},
+    {"timestamp": "2026-04-14T18:00:00Z", "price": 0.4910},
+    {"timestamp": "2026-04-14T19:00:00Z", "price": 0.5110},
+    {"timestamp": "2026-04-14T20:00:00Z", "price": 0.5140},
+    {"timestamp": "2026-04-14T21:00:00Z", "price": 0.5170},
+    {"timestamp": "2026-04-14T22:00:00Z", "price": 0.5200}
+  ]
+}

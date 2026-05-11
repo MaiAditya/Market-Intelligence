@@ -62,6 +62,7 @@ class EventNode:
     # Additional metadata
     raw_title: Optional[str] = None
     url: Optional[str] = None
+    description: Optional[str] = None
     
     def __post_init__(self):
         """Validate fields after initialization."""
@@ -91,7 +92,8 @@ class EventNode:
             "source_doc_id": self.source_doc_id,
             "source_signal_id": self.source_signal_id,
             "raw_title": self.raw_title,
-            "url": self.url
+            "url": self.url,
+            "description": self.description,
         }
     
     @classmethod
@@ -114,7 +116,8 @@ class EventNode:
             source_doc_id=data.get("source_doc_id"),
             source_signal_id=data.get("source_signal_id"),
             raw_title=data.get("raw_title"),
-            url=data.get("url")
+            url=data.get("url"),
+            description=data.get("description"),
         )
 
 
